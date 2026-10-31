@@ -50,7 +50,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout CyberDrumProcessor::createPa
         profileNames.add(CyberDrum::DrumKitProfiles::kAllProfiles[i].name);
     }
     params.push_back(std::make_unique<juce::AudioParameterChoice>(
-        juce::ParameterID("drumProfile", 1), "Drum Shell Profile", profileNames, 1)); // Default Bonham Maple Kick
+        juce::ParameterID("drumProfile", 1), "Drum Shell Profile", profileNames, 0)); // Default Bonham Maple Kick
 
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID("morphAmount", 1), "Shell Morph Amount", 0.0f, 100.0f, 85.0f));
@@ -59,7 +59,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout CyberDrumProcessor::createPa
         juce::ParameterID("deBoxAmount", 1), "De-Box Mud Cut", 0.0f, 100.0f, 75.0f));
 
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("customTuning", 1), "Shell Fundamental Tuning", 25.0f, 350.0f, 48.0f));
+        juce::ParameterID("customTuning", 1), "Shell / Bell Fundamental Tuning",
+        juce::NormalisableRange<float>(25.0f, 3500.0f, 0.5f, 0.35f), 48.0f));
 
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID("shellDepth", 1), "Shell Depth Scalar", 0.20f, 1.50f, 0.95f));

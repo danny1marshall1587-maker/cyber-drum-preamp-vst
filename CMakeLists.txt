@@ -6,9 +6,9 @@ if(APPLE)
 endif()
 
 if(APPLE)
-    project(CyberDrumPreamp VERSION 1.0.0 LANGUAGES CXX C OBJC OBJCXX)
+    project(CyberDrumPreamp VERSION 1.1.0 LANGUAGES CXX C OBJC OBJCXX)
 else()
-    project(CyberDrumPreamp VERSION 1.0.0 LANGUAGES CXX C)
+    project(CyberDrumPreamp VERSION 1.1.0 LANGUAGES CXX C)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -44,7 +44,7 @@ juce_add_plugin(CyberDrumPreamp
     FORMATS ${PLUGIN_FORMATS}
     LV2URI "http://cyber-audio.co.uk/plugins/cyber-drum-preamp"
     PRODUCT_NAME "CyberDrumPreamp"
-    VERSION "1.0.0"
+    VERSION "1.1.0"
     AU_DESCRIPTION "Fluid Space Drum Shell & Percussion Preamp"
 )
 

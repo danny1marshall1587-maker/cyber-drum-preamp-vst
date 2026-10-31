@@ -6,23 +6,28 @@ CyberDrumEditor::CyberDrumEditor(CyberDrumProcessor& p)
 {
     setLookAndFeel(&customLookAndFeel);
 
-    // 1. Preset Selector
+    // 1. Preset Selector (20 Signature Factory Presets)
     addAndMakeVisible(presetSelector);
     presetSelector.addItem("Preset: Bonham 26\" Giant Maple Kick", 1);
     presetSelector.addItem("Preset: 70s Dead Tea-Towel Kick", 2);
     presetSelector.addItem("Preset: Modern Punchy Birch 22\" Kick", 3);
-    presetSelector.addItem("Preset: Sub-Piston 808 Cannon Kick", 4);
-    presetSelector.addItem("Preset: Bell Brass Black Beauty Snare", 5);
-    presetSelector.addItem("Preset: 70s Fat Wallet Studio Snare", 6);
-    presetSelector.addItem("Preset: Tight Funk 13\" Piccolo Snare", 7);
-    presetSelector.addItem("Preset: Studio Maple 5.5x14 Snare", 8);
-    presetSelector.addItem("Preset: 12\" & 16\" Singing Studio Toms", 9);
-    presetSelector.addItem("Preset: 18\" Bonham Low Thunder Tom", 10);
-    presetSelector.addItem("Preset: Flamenco Deep Acoustic Cajon", 11);
-    presetSelector.addItem("Preset: Acoustic Gig Live Cajon", 12);
-    presetSelector.addItem("Preset: Afro-Cuban Conga / Quinto", 13);
-    presetSelector.addItem("Preset: African Djembe Deep Bass", 14);
-    presetSelector.addItem("Preset: Stereo Drum Bus / Room Glue", 15);
+    presetSelector.addItem("Preset: Metal Click Sub-Drop Kick", 4);
+    presetSelector.addItem("Preset: Sub-Piston 808 Cannon Kick", 5);
+    presetSelector.addItem("Preset: Bell Brass Black Beauty Snare", 6);
+    presetSelector.addItem("Preset: 70s Fat Wallet Studio Snare", 7);
+    presetSelector.addItem("Preset: Ludwig Supraphonic 400 Aluminum", 8);
+    presetSelector.addItem("Preset: 80s Power Gated Rock Snare", 9);
+    presetSelector.addItem("Preset: Nashville Solid Maple Wood-Hoop", 10);
+    presetSelector.addItem("Preset: Tight Funk 13\" Piccolo Snare", 11);
+    presetSelector.addItem("Preset: Reggae High Soprano 10\" Snare", 12);
+    presetSelector.addItem("Preset: 12\" & 16\" Singing Studio Toms", 13);
+    presetSelector.addItem("Preset: 18\" Bonham Low Thunder Tom", 14);
+    presetSelector.addItem("Preset: Dark Turkish Ride 22\" (Silky Shimmer)", 15);
+    presetSelector.addItem("Preset: Vintage 60s A-Style 14\" Hi-Hats", 16);
+    presetSelector.addItem("Preset: Fast Studio Bronze Crash 18\"", 17);
+    presetSelector.addItem("Preset: Flamenco Deep Acoustic Cajon", 18);
+    presetSelector.addItem("Preset: Acoustic Gig Live Cajon", 19);
+    presetSelector.addItem("Preset: Stereo Drum Bus / Room Glue", 20);
     presetSelector.setSelectedId(1, juce::dontSendNotification);
     presetSelector.onChange = [this]() {
         loadPreset(presetSelector.getSelectedId());
@@ -245,8 +250,8 @@ void CyberDrumEditor::loadPreset(int id)
     };
 
     switch (id) {
-        case 1: // Bonham 26" Giant Maple Kick
-            setVal("drumProfile", 1);
+        case 1: // Bonham 26" Giant Maple Kick (Profile 0)
+            setVal("drumProfile", 0);
             setVal("morphAmount", 90.0f); setVal("deBoxAmount", 80.0f);
             setVal("customTuning", 48.0f); setVal("shellDepth", 0.95f);
             setVal("ventChoke", 75.0f); setVal("snareWireBuzz", 0.0f); setVal("stickSnap", 60.0f);
@@ -256,8 +261,8 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 24.0f); setVal("reverbDecay", 45.0f); setVal("reverbSize", 1.4f); setVal("reverbTone", 6000.0f);
             break;
 
-        case 2: // 70s Dead Tea-Towel Kick
-            setVal("drumProfile", 0);
+        case 2: // 70s Dead Tea-Towel Kick (Profile 1)
+            setVal("drumProfile", 1);
             setVal("morphAmount", 85.0f); setVal("deBoxAmount", 85.0f);
             setVal("customTuning", 58.0f); setVal("shellDepth", 0.50f);
             setVal("ventChoke", 85.0f); setVal("snareWireBuzz", 0.0f); setVal("stickSnap", 50.0f);
@@ -267,7 +272,7 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 10.0f); setVal("reverbDecay", 20.0f); setVal("reverbSize", 0.8f); setVal("reverbTone", 5000.0f);
             break;
 
-        case 3: // Modern Punchy Birch 22" Kick
+        case 3: // Modern Punchy Birch 22" Kick (Profile 2)
             setVal("drumProfile", 2);
             setVal("morphAmount", 88.0f); setVal("deBoxAmount", 80.0f);
             setVal("customTuning", 52.0f); setVal("shellDepth", 0.80f);
@@ -278,7 +283,18 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 14.0f); setVal("reverbDecay", 25.0f); setVal("reverbSize", 1.0f); setVal("reverbTone", 7500.0f);
             break;
 
-        case 4: // Sub-Piston 808 Cannon Kick
+        case 4: // Metal Click Sub-Drop Kick (Profile 4)
+            setVal("drumProfile", 4);
+            setVal("morphAmount", 92.0f); setVal("deBoxAmount", 85.0f);
+            setVal("customTuning", 45.0f); setVal("shellDepth", 0.85f);
+            setVal("ventChoke", 92.0f); setVal("snareWireBuzz", 0.0f); setVal("stickSnap", 95.0f);
+            setVal("eqLowGain", 3.5f); setVal("eqLowMidFreq", 380.0f); setVal("eqLowMidGain", -4.5f);
+            setVal("eqHighMidFreq", 4200.0f); setVal("eqHighMidGain", 4.0f); setVal("eqHighGain", 2.0f);
+            setVal("reverbType", 0);
+            setVal("reverbMix", 8.0f); setVal("reverbDecay", 18.0f); setVal("reverbSize", 0.75f); setVal("reverbTone", 8000.0f);
+            break;
+
+        case 5: // Sub-Piston 808 Cannon Kick (Profile 3)
             setVal("drumProfile", 3);
             setVal("morphAmount", 95.0f); setVal("deBoxAmount", 75.0f);
             setVal("customTuning", 42.0f); setVal("shellDepth", 0.90f);
@@ -289,8 +305,8 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 12.0f); setVal("reverbDecay", 22.0f); setVal("reverbSize", 1.1f); setVal("reverbTone", 6000.0f);
             break;
 
-        case 5: // Bell Brass Black Beauty Snare
-            setVal("drumProfile", 5);
+        case 6: // Bell Brass Black Beauty Snare (Profile 8)
+            setVal("drumProfile", 8);
             setVal("morphAmount", 88.0f); setVal("deBoxAmount", 75.0f);
             setVal("customTuning", 185.0f); setVal("shellDepth", 0.60f);
             setVal("ventChoke", 72.0f); setVal("snareWireBuzz", 50.0f); setVal("stickSnap", 80.0f);
@@ -300,8 +316,8 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 26.0f); setVal("reverbDecay", 40.0f); setVal("reverbSize", 1.2f); setVal("reverbTone", 9500.0f);
             break;
 
-        case 6: // 70s Fat Wallet Studio Snare
-            setVal("drumProfile", 4);
+        case 7: // 70s Fat Wallet Studio Snare (Profile 9)
+            setVal("drumProfile", 9);
             setVal("morphAmount", 85.0f); setVal("deBoxAmount", 85.0f);
             setVal("customTuning", 145.0f); setVal("shellDepth", 0.70f);
             setVal("ventChoke", 88.0f); setVal("snareWireBuzz", 55.0f); setVal("stickSnap", 50.0f);
@@ -311,8 +327,41 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 15.0f); setVal("reverbDecay", 22.0f); setVal("reverbSize", 0.9f); setVal("reverbTone", 6000.0f);
             break;
 
-        case 7: // Tight Funk 13" Piccolo Snare
-            setVal("drumProfile", 6);
+        case 8: // Ludwig Supraphonic 400 Aluminum (Profile 12)
+            setVal("drumProfile", 12);
+            setVal("morphAmount", 86.0f); setVal("deBoxAmount", 70.0f);
+            setVal("customTuning", 210.0f); setVal("shellDepth", 0.50f);
+            setVal("ventChoke", 70.0f); setVal("snareWireBuzz", 52.0f); setVal("stickSnap", 82.0f);
+            setVal("eqLowGain", 0.5f); setVal("eqLowMidFreq", 480.0f); setVal("eqLowMidGain", -2.0f);
+            setVal("eqHighMidFreq", 3600.0f); setVal("eqHighMidGain", 2.8f); setVal("eqHighGain", 2.2f);
+            setVal("reverbType", 2);
+            setVal("reverbMix", 22.0f); setVal("reverbDecay", 32.0f); setVal("reverbSize", 1.1f); setVal("reverbTone", 9000.0f);
+            break;
+
+        case 9: // 80s Power Gated Rock Snare (Profile 13)
+            setVal("drumProfile", 13);
+            setVal("morphAmount", 92.0f); setVal("deBoxAmount", 75.0f);
+            setVal("customTuning", 170.0f); setVal("shellDepth", 0.75f);
+            setVal("ventChoke", 85.0f); setVal("snareWireBuzz", 65.0f); setVal("stickSnap", 90.0f);
+            setVal("eqLowGain", 2.5f); setVal("eqLowMidFreq", 400.0f); setVal("eqLowMidGain", -2.5f);
+            setVal("eqHighMidFreq", 3200.0f); setVal("eqHighMidGain", 3.5f); setVal("eqHighGain", 2.5f);
+            setVal("reverbType", 1); // Arena Live Hall
+            setVal("reverbMix", 35.0f); setVal("reverbDecay", 25.0f); setVal("reverbSize", 1.5f); setVal("reverbTone", 8500.0f);
+            break;
+
+        case 10: // Nashville Solid Maple Wood-Hoop (Profile 14)
+            setVal("drumProfile", 14);
+            setVal("morphAmount", 84.0f); setVal("deBoxAmount", 78.0f);
+            setVal("customTuning", 165.0f); setVal("shellDepth", 0.65f);
+            setVal("ventChoke", 80.0f); setVal("snareWireBuzz", 45.0f); setVal("stickSnap", 68.0f);
+            setVal("eqLowGain", 1.5f); setVal("eqLowMidFreq", 450.0f); setVal("eqLowMidGain", -2.5f);
+            setVal("eqHighMidFreq", 3000.0f); setVal("eqHighMidGain", 1.8f); setVal("eqHighGain", 1.2f);
+            setVal("reverbType", 0);
+            setVal("reverbMix", 18.0f); setVal("reverbDecay", 28.0f); setVal("reverbSize", 1.05f); setVal("reverbTone", 7200.0f);
+            break;
+
+        case 11: // Tight Funk 13" Piccolo Snare (Profile 10)
+            setVal("drumProfile", 10);
             setVal("morphAmount", 80.0f); setVal("deBoxAmount", 70.0f);
             setVal("customTuning", 225.0f); setVal("shellDepth", 0.25f);
             setVal("ventChoke", 65.0f); setVal("snareWireBuzz", 40.0f); setVal("stickSnap", 85.0f);
@@ -322,19 +371,19 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 20.0f); setVal("reverbDecay", 30.0f); setVal("reverbSize", 1.0f); setVal("reverbTone", 10000.0f);
             break;
 
-        case 8: // Studio Maple 5.5x14 Snare
-            setVal("drumProfile", 7);
-            setVal("morphAmount", 85.0f); setVal("deBoxAmount", 75.0f);
-            setVal("customTuning", 195.0f); setVal("shellDepth", 0.50f);
-            setVal("ventChoke", 75.0f); setVal("snareWireBuzz", 48.0f); setVal("stickSnap", 70.0f);
-            setVal("eqLowGain", 1.0f); setVal("eqLowMidFreq", 420.0f); setVal("eqLowMidGain", -2.5f);
-            setVal("eqHighMidFreq", 3200.0f); setVal("eqHighMidGain", 2.0f); setVal("eqHighGain", 1.5f);
-            setVal("reverbType", 0);
-            setVal("reverbMix", 20.0f); setVal("reverbDecay", 32.0f); setVal("reverbSize", 1.1f); setVal("reverbTone", 7500.0f);
+        case 12: // Reggae High Soprano 10" Snare (Profile 15)
+            setVal("drumProfile", 15);
+            setVal("morphAmount", 82.0f); setVal("deBoxAmount", 68.0f);
+            setVal("customTuning", 260.0f); setVal("shellDepth", 0.20f);
+            setVal("ventChoke", 60.0f); setVal("snareWireBuzz", 35.0f); setVal("stickSnap", 88.0f);
+            setVal("eqLowGain", -1.0f); setVal("eqLowMidFreq", 520.0f); setVal("eqLowMidGain", -2.0f);
+            setVal("eqHighMidFreq", 4500.0f); setVal("eqHighMidGain", 3.5f); setVal("eqHighGain", 3.0f);
+            setVal("reverbType", 1);
+            setVal("reverbMix", 28.0f); setVal("reverbDecay", 35.0f); setVal("reverbSize", 1.2f); setVal("reverbTone", 9000.0f);
             break;
 
-        case 9: // 12" & 16" Singing Studio Toms
-            setVal("drumProfile", 8);
+        case 13: // 12" & 16" Singing Studio Toms (Profile 17)
+            setVal("drumProfile", 17);
             setVal("morphAmount", 85.0f); setVal("deBoxAmount", 78.0f);
             setVal("customTuning", 130.0f); setVal("shellDepth", 0.55f);
             setVal("ventChoke", 70.0f); setVal("snareWireBuzz", 0.0f); setVal("stickSnap", 65.0f);
@@ -344,8 +393,8 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 22.0f); setVal("reverbDecay", 38.0f); setVal("reverbSize", 1.2f); setVal("reverbTone", 7000.0f);
             break;
 
-        case 10: // 18" Bonham Low Thunder Tom
-            setVal("drumProfile", 10);
+        case 14: // 18" Bonham Low Thunder Tom (Profile 19)
+            setVal("drumProfile", 19);
             setVal("morphAmount", 90.0f); setVal("deBoxAmount", 80.0f);
             setVal("customTuning", 68.0f); setVal("shellDepth", 0.95f);
             setVal("ventChoke", 85.0f); setVal("snareWireBuzz", 0.0f); setVal("stickSnap", 60.0f);
@@ -355,8 +404,43 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 25.0f); setVal("reverbDecay", 48.0f); setVal("reverbSize", 1.4f); setVal("reverbTone", 6000.0f);
             break;
 
-        case 11: // Flamenco Deep Acoustic Cajon (Warm Peruvian beech box, low bass slap, guitar-string sizzle)
-            setVal("drumProfile", 11);
+        case 15: // Dark Turkish Ride 22" (Silky Shimmer) (Profile 20)
+            setVal("drumProfile", 20);
+            setVal("morphAmount", 85.0f); setVal("deBoxAmount", 60.0f);
+            setVal("customTuning", 2200.0f); setVal("shellDepth", 0.85f);
+            setVal("ventChoke", 75.0f); setVal("snareWireBuzz", 40.0f); setVal("stickSnap", 70.0f);
+            setVal("eqLowGain", -3.0f); setVal("eqLowMidFreq", 450.0f); setVal("eqLowMidGain", -4.0f);
+            setVal("eqHighMidFreq", 3200.0f); setVal("eqHighMidGain", 1.0f); setVal("eqHighGain", 3.0f);
+            setVal("stereoWidth", 120.0f);
+            setVal("reverbType", 0);
+            setVal("reverbMix", 18.0f); setVal("reverbDecay", 30.0f); setVal("reverbSize", 1.1f); setVal("reverbTone", 10000.0f);
+            break;
+
+        case 16: // Vintage 60s A-Style 14" Hi-Hats (Profile 21)
+            setVal("drumProfile", 21);
+            setVal("morphAmount", 88.0f); setVal("deBoxAmount", 65.0f);
+            setVal("customTuning", 2600.0f); setVal("shellDepth", 0.55f);
+            setVal("ventChoke", 80.0f); setVal("snareWireBuzz", 50.0f); setVal("stickSnap", 82.0f);
+            setVal("eqLowGain", -4.0f); setVal("eqLowMidFreq", 500.0f); setVal("eqLowMidGain", -3.0f);
+            setVal("eqHighMidFreq", 4200.0f); setVal("eqHighMidGain", 2.0f); setVal("eqHighGain", 3.5f);
+            setVal("reverbType", 0);
+            setVal("reverbMix", 12.0f); setVal("reverbDecay", 20.0f); setVal("reverbSize", 0.85f); setVal("reverbTone", 11000.0f);
+            break;
+
+        case 17: // Fast Studio Bronze Crash 18" (Profile 22)
+            setVal("drumProfile", 22);
+            setVal("morphAmount", 90.0f); setVal("deBoxAmount", 55.0f);
+            setVal("customTuning", 1800.0f); setVal("shellDepth", 0.70f);
+            setVal("ventChoke", 85.0f); setVal("snareWireBuzz", 35.0f); setVal("stickSnap", 75.0f);
+            setVal("eqLowGain", -2.5f); setVal("eqLowMidFreq", 400.0f); setVal("eqLowMidGain", -3.0f);
+            setVal("eqHighMidFreq", 3500.0f); setVal("eqHighMidGain", 1.5f); setVal("eqHighGain", 4.0f);
+            setVal("stereoWidth", 135.0f);
+            setVal("reverbType", 1);
+            setVal("reverbMix", 26.0f); setVal("reverbDecay", 42.0f); setVal("reverbSize", 1.35f); setVal("reverbTone", 11500.0f);
+            break;
+
+        case 18: // Flamenco Deep Acoustic Cajon (Profile 25)
+            setVal("drumProfile", 25);
             setVal("morphAmount", 88.0f); setVal("deBoxAmount", 82.0f);
             setVal("customTuning", 65.0f); setVal("shellDepth", 0.85f);
             setVal("ventChoke", 75.0f); setVal("snareWireBuzz", 40.0f); setVal("stickSnap", 70.0f);
@@ -366,8 +450,8 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 18.0f); setVal("reverbDecay", 30.0f); setVal("reverbSize", 1.1f); setVal("reverbTone", 7000.0f);
             break;
 
-        case 12: // Acoustic Gig Live Cajon (Punchy duo cajon with 68Hz soundhole air boom)
-            setVal("drumProfile", 12);
+        case 19: // Acoustic Gig Live Cajon (Profile 26)
+            setVal("drumProfile", 26);
             setVal("morphAmount", 85.0f); setVal("deBoxAmount", 80.0f);
             setVal("customTuning", 72.0f); setVal("shellDepth", 0.75f);
             setVal("ventChoke", 70.0f); setVal("snareWireBuzz", 45.0f); setVal("stickSnap", 75.0f);
@@ -377,30 +461,8 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 16.0f); setVal("reverbDecay", 28.0f); setVal("reverbSize", 1.0f); setVal("reverbTone", 7500.0f);
             break;
 
-        case 13: // Afro-Cuban Conga / Quinto
-            setVal("drumProfile", 13);
-            setVal("morphAmount", 82.0f); setVal("deBoxAmount", 75.0f);
-            setVal("customTuning", 190.0f); setVal("shellDepth", 0.70f);
-            setVal("ventChoke", 65.0f); setVal("snareWireBuzz", 0.0f); setVal("stickSnap", 75.0f);
-            setVal("eqLowGain", 1.5f); setVal("eqLowMidFreq", 420.0f); setVal("eqLowMidGain", -2.0f);
-            setVal("eqHighMidFreq", 3200.0f); setVal("eqHighMidGain", 1.5f); setVal("eqHighGain", 1.0f);
-            setVal("reverbType", 0);
-            setVal("reverbMix", 20.0f); setVal("reverbDecay", 32.0f); setVal("reverbSize", 1.1f); setVal("reverbTone", 7000.0f);
-            break;
-
-        case 14: // African Djembe Deep Bass
-            setVal("drumProfile", 14);
-            setVal("morphAmount", 88.0f); setVal("deBoxAmount", 80.0f);
-            setVal("customTuning", 55.0f); setVal("shellDepth", 0.90f);
-            setVal("ventChoke", 80.0f); setVal("snareWireBuzz", 0.0f); setVal("stickSnap", 80.0f);
-            setVal("eqLowGain", 3.0f); setVal("eqLowMidFreq", 280.0f); setVal("eqLowMidGain", -3.5f);
-            setVal("eqHighMidFreq", 3500.0f); setVal("eqHighMidGain", 2.0f); setVal("eqHighGain", 1.0f);
-            setVal("reverbType", 1);
-            setVal("reverbMix", 22.0f); setVal("reverbDecay", 40.0f); setVal("reverbSize", 1.3f); setVal("reverbTone", 6500.0f);
-            break;
-
-        case 15: // Stereo Drum Bus / Room Glue
-            setVal("drumProfile", 1);
+        case 20: // Stereo Drum Bus / Room Glue (Profile 0)
+            setVal("drumProfile", 0);
             setVal("morphAmount", 65.0f); setVal("deBoxAmount", 60.0f);
             setVal("customTuning", 55.0f); setVal("shellDepth", 0.70f);
             setVal("ventChoke", 70.0f); setVal("snareWireBuzz", 25.0f); setVal("stickSnap", 60.0f);

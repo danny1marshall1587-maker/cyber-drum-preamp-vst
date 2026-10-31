@@ -228,7 +228,6 @@ public:
         dcBlockerX1 = dcBlockerY1 = 0.0f;
     }
 
-    // Returns the live internal chamber pressure state for UI visualization
     float getChamberPressure() const noexcept { return chamberPressure; }
     float getHeadDisplacement() const noexcept { return headPosition; }
     float getWireActivity() const noexcept { return snareWireEnvelope; }
@@ -241,21 +240,14 @@ public:
                                float closeMicAir = 0.65f,
                                float sympatheticKitBleed = 0.0f) noexcept
     {
-        // --------------------------------------------------------------------
         // 1. STICK / BEATER TRANSIENT VELOCITY & FLUID VISCOSITY CUSHION
-        // --------------------------------------------------------------------
-        // Absorbs piercing digital rimshot spikes and converts them into thick stick "crack"
         const float instantVelocity = inputMicOrTrigger - prevInput;
         prevInput = inputMicOrTrigger;
         stickSnapMomentum = (stickSnapMomentum * 0.58f) + (instantVelocity * 0.42f);
 
         const float stickCrack = FluidMath::fast_tanh(stickSnapMomentum * 2.8f) * closeMicAir * 0.50f;
 
-        // --------------------------------------------------------------------
         // 2. PNEUMATIC AIR-VENT COMPRESSION (Internal Shell Pressure Bottleneck)
-        // --------------------------------------------------------------------
-        // When hit hard, air gets trapped inside the wood shell, compressing the peak
-        // and increasing the internal air-spring stiffness!
         const float hitEnergy = std::min(std::abs(inputMicOrTrigger) * (1.5f + ventChokeAmount * 2.0f), 2.5f);
         const float ventRecoverySpeed = 0.0008f + (1.0f - shellDepthScalar) * 0.0025f;
 
@@ -263,17 +255,12 @@ public:
         chamberPressure += (1.0f - chamberPressure) * ventRecoverySpeed;
         chamberPressure = std::clamp(chamberPressure, 0.30f, 1.0f);
 
-        // Internal air compression rounds off the raw transient naturally
         const float compressedBatterWave = FluidMath::fluidTransfer(
             inputMicOrTrigger * chamberPressure * (1.2f + ventChokeAmount * 0.8f), 
             0.35f
         );
 
-        // --------------------------------------------------------------------
         // 3. TOP-TO-BOTTOM HEAD AIR COLUMN PROPAGATION DELAY
-        // --------------------------------------------------------------------
-        // Simulates the physical time (0.3ms to 2.2ms) it takes the shockwave to travel
-        // from the top batter head down through the shell to the bottom head
         shellAirColumnBuf[writeIdx] = compressedBatterWave;
         const int mask = kMaxShellDelay - 1;
         const int shellDelaySamples = std::clamp(
@@ -284,11 +271,7 @@ public:
         const float bottomHeadExcitation = shellAirColumnBuf[readIdx] + (sympatheticKitBleed * 0.25f);
         writeIdx = (writeIdx + 1) & mask;
 
-        // --------------------------------------------------------------------
         // 4. NON-LINEAR DRUMHEAD MASS-SPRING WITH TENSION PITCH-GLIDE
-        // --------------------------------------------------------------------
-        // Hitting the drum harder lowers chamberPressure, which tightens the air-spring
-        // and bends the drum's fundamental pitch slightly UP on impact before gliding down!
         const float pitchGlideBoost = 1.0f + ((1.0f - chamberPressure) * ventChokeAmount * 0.32f);
         const float omega = 2.0f * 3.14159265f * drumFundamentalHz * pitchGlideBoost;
         const float stiffness = omega * omega;
@@ -300,11 +283,9 @@ public:
 
         headVelocity += (driveForce + restoringForce + dampingForce) * timeStep;
         headPosition += headVelocity * timeStep;
-        headPosition = FluidMath::fast_tanh(headPosition * 1.4f); // Elastic hoop boundary limit
+        headPosition = FluidMath::fast_tanh(headPosition * 1.4f);
 
-        // --------------------------------------------------------------------
-        // 5. NON-LINEAR SNARE WIRE RATTLE (Excited by Bottom Head Velocity)
-        // --------------------------------------------------------------------
+        // 5. NON-LINEAR SNARE WIRE RATTLE
         float wireSizzle = 0.0f;
         if (snareWireBuzz > 0.001f) {
             const float headSpeed = std::abs(headVelocity) * 0.0015f + std::abs(bottomHeadExcitation) * 0.8f;
@@ -312,25 +293,97 @@ public:
             snareWireEnvelope += (headSpeed - snareWireEnvelope) * envRate;
             snareWireEnvelope = std::min(snareWireEnvelope, 1.2f);
 
-            // High-passed air-damped metallic wire rattle against the bottom Mylar head
             const float rawNoise = fastWhiteNoise();
             wireSizzle = FluidMath::fast_tanh(rawNoise * snareWireEnvelope * 3.0f) * snareWireBuzz * 0.35f;
         }
 
-        // --------------------------------------------------------------------
         // 6. COMBINE BATTER ATTACK, SHELL BODY, STICK SNAP & SNARE WIRES
-        // --------------------------------------------------------------------
         const float combinedDrum = (compressedBatterWave * 0.70f)
                                  + (headPosition * (0.55f + closeMicAir * 0.35f))
                                  + stickCrack
                                  + wireSizzle;
 
-        // DC Blocker & Final Studio Tape/Transformer Headroom Cushion
+        // DC Blocker
         const float dcOut = combinedDrum - dcBlockerX1 + 0.995f * dcBlockerY1;
         dcBlockerX1 = combinedDrum;
         dcBlockerY1 = dcOut;
 
         return FluidMath::fast_tanh(dcOut * 1.20f);
+    }
+};
+
+// ============================================================================
+// Stage 1B: Fluid Bronze Cymbal & Plate Dispersion DSP
+// Models flexural wave dispersion in B20/B8 bronze alloy plates,
+// bell vs bow modal resonance, and air viscosity shimmer (zero harsh trash)
+// ============================================================================
+class FluidCymbalDSP {
+private:
+    float apX[4] = {0.0f}, apY[4] = {0.0f};
+
+    float bellBp = 0.0f, bellLp = 0.0f;
+    float bowBp = 0.0f,  bowLp = 0.0f;
+
+    float washState = 0.0f;
+    float harshDetectEnv = 0.0f;
+    float sampleRate = 48000.0f;
+
+public:
+    void prepare(float sr) noexcept {
+        sampleRate = sr > 8000.0f ? sr : 48000.0f;
+        reset();
+    }
+
+    void reset() noexcept {
+        for (int i = 0; i < 4; ++i) apX[i] = apY[i] = 0.0f;
+        bellBp = bellLp = 0.0f;
+        bowBp = bowLp = 0.0f;
+        washState = 0.0f;
+        harshDetectEnv = 0.0f;
+    }
+
+    inline float processSample(float in, float bellFreq = 2200.0f, float bowFreq = 650.0f,
+                               float shimmer = 0.70f, float bronzeViscosity = 0.45f) noexcept
+    {
+        // 1. Flexural Wave Dispersion: high frequencies travel faster in thin metal plates
+        float s = in;
+        const float g = 0.62f;
+        for (int i = 0; i < 4; ++i) {
+            float d = -g * s + apX[i] + g * apY[i];
+            apX[i] = s;
+            apY[i] = d;
+            s = d;
+        }
+
+        // 2. Dual Modal Bell & Bow Resonators
+        const float wBell = std::clamp(2.0f * 3.14159265f * bellFreq / sampleRate, 0.01f, 0.45f);
+        const float qBell = 0.12f;
+        float hpBell = in - bellLp - qBell * bellBp;
+        bellBp += wBell * hpBell;
+        bellLp += wBell * bellBp;
+
+        const float wBow = std::clamp(2.0f * 3.14159265f * bowFreq / sampleRate, 0.01f, 0.45f);
+        const float qBow = 0.35f;
+        float hpBow = in - bowLp - qBow * bowBp;
+        bowBp += wBow * hpBow;
+        bowLp += wBow * bowBp;
+
+        // 3. Dynamic Harsh Sizzle Sieve (Tames 5-8 kHz trashiness, opens 12-18 kHz air)
+        const float highEnergy = std::abs(in - bowLp);
+        harshDetectEnv += (highEnergy - harshDetectEnv) * 0.005f;
+        const float harshDamp = std::clamp(1.0f - harshDetectEnv * 0.85f * bronzeViscosity, 0.25f, 1.0f);
+
+        // 4. Free-Air Viscosity Shimmer Wash
+        const float washAlpha = std::clamp(0.40f + shimmer * 0.45f, 0.1f, 0.95f);
+        washState += (s - washState) * washAlpha;
+
+        const float combined = (in * 0.35f)
+                             + (s * harshDamp * 0.45f)
+                             + (bellBp * 0.30f * shimmer)
+                             + (bowBp * 0.40f)
+                             + (washState * 0.35f * shimmer);
+
+        return FluidMath::fast_tanh(combined * 1.15f);
     }
 };
 
@@ -342,60 +395,99 @@ struct DrumShellProfile {
     const char* name;
     float originalBoxyCutHz;   // Frequency of the real drum's cardboard mud to strip
     float targetFundamentalHz; // New virtual drum tuning (Hz)
-    float shellDepthScalar;    // 0.2 (Piccolo) -> 0.95 (26" Bonham Kick)
-    float ventChokeAmount;     // Pneumatic air-spring compression
-    float woodViscosity;       // 0.35 (Crisp Birch/Brass) -> 0.82 (Warm Vintage Maple)
-    float snareWireBuzz;       // 0.0 (Kick/Tom) -> 0.65 (Deep Studio Snare Wires)
+    float shellDepthScalar;    // 0.2 (Piccolo) -> 0.95 (26" Bonham Kick) or Cymbal Diameter
+    float ventChokeAmount;     // Pneumatic air-spring compression or Cymbal Shimmer
+    float woodViscosity;       // 0.35 (Crisp Birch/Brass) -> 0.82 (Warm Vintage Maple) or Bronze Viscosity
+    float snareWireBuzz;       // 0.0 (Kick/Tom) -> 0.65 (Deep Studio Snare Wires) or Bell Ping
     float headDamping;         // 0.2 (Wide open ring) -> 0.9 (70s Tea-Towel / MoonGel dead)
+    bool  isCymbal = false;
 };
 
 namespace DrumKitProfiles {
-    // 1. Kick Drum Profiles
-    constexpr DrumShellProfile kKick_70sDryDead     = {"70s Tea-Towel Dry Kick",   195.0f,  58.0f, 0.50f, 0.85f, 0.80f, 0.00f, 0.88f};
-    constexpr DrumShellProfile kKick_26BonhamMaple  = {"26-Inch Bonham Maple",     165.0f,  48.0f, 0.95f, 0.70f, 0.75f, 0.00f, 0.30f};
-    constexpr DrumShellProfile kKick_ModernBirch    = {"Modern Punchy Birch 22",   220.0f,  52.0f, 0.80f, 0.90f, 0.42f, 0.00f, 0.65f};
-    constexpr DrumShellProfile kKick_SubCannon808   = {"Sub-Piston Cannon 24",     180.0f,  42.0f, 0.90f, 0.95f, 0.70f, 0.00f, 0.45f};
+    // 1. Kick Drum Profiles (8 Profiles)
+    constexpr DrumShellProfile kKick_26BonhamMaple     = {"26-Inch Bonham Maple Kick",       165.0f,  48.0f, 0.95f, 0.70f, 0.75f, 0.00f, 0.30f, false};
+    constexpr DrumShellProfile kKick_70sDryDead        = {"70s Tea-Towel Dry Kick",         195.0f,  58.0f, 0.50f, 0.85f, 0.80f, 0.00f, 0.88f, false};
+    constexpr DrumShellProfile kKick_ModernBirch       = {"Modern Punchy Birch 22\" Kick",  220.0f,  52.0f, 0.80f, 0.90f, 0.42f, 0.00f, 0.65f, false};
+    constexpr DrumShellProfile kKick_SubCannon808      = {"Sub-Piston Cannon 24\" Kick",    180.0f,  42.0f, 0.90f, 0.95f, 0.70f, 0.00f, 0.45f, false};
+    constexpr DrumShellProfile kKick_MetalClick        = {"Metal Click Sub-Drop Kick",       240.0f,  45.0f, 0.85f, 0.92f, 0.35f, 0.00f, 0.75f, false};
+    constexpr DrumShellProfile kKick_Vintage60sDown    = {"Vintage 60s 20\" Downbeat Kick", 175.0f,  62.0f, 0.60f, 0.65f, 0.78f, 0.00f, 0.40f, false};
+    constexpr DrumShellProfile kKick_FunkTightBirch    = {"Heavy Funk Tight 20\" Birch Kick",210.0f, 55.0f, 0.65f, 0.88f, 0.45f, 0.00f, 0.80f, false};
+    constexpr DrumShellProfile kKick_TrapAnalog808     = {"Trap / Electronic 808 Sub Boom", 150.0f,  38.0f, 0.95f, 0.98f, 0.80f, 0.00f, 0.25f, false};
 
-    // 2. Snare Drum Profiles
-    constexpr DrumShellProfile kSnare_Fat70sWallet  = {"70s Fat Dead Wallet Snare", 340.0f, 145.0f, 0.70f, 0.88f, 0.82f, 0.55f, 0.90f};
-    constexpr DrumShellProfile kSnare_BlackBeauty   = {"6.5x14 Bell Brass Crack",   290.0f, 185.0f, 0.60f, 0.72f, 0.38f, 0.45f, 0.40f};
-    constexpr DrumShellProfile kSnare_TightPiccolo  = {"Tight Funk Birch 13",       260.0f, 225.0f, 0.25f, 0.65f, 0.45f, 0.35f, 0.55f};
-    constexpr DrumShellProfile kSnare_VintageMaple  = {"5.5x14 Studio Maple",       310.0f, 195.0f, 0.50f, 0.75f, 0.78f, 0.48f, 0.50f};
+    // 2. Snare Drum Profiles (8 Profiles)
+    constexpr DrumShellProfile kSnare_BlackBeauty      = {"6.5x14 Bell Brass Black Beauty",  290.0f, 185.0f, 0.60f, 0.72f, 0.38f, 0.50f, 0.40f, false};
+    constexpr DrumShellProfile kSnare_Fat70sWallet     = {"70s Fat Dead Wallet Snare",       340.0f, 145.0f, 0.70f, 0.88f, 0.82f, 0.55f, 0.90f, false};
+    constexpr DrumShellProfile kSnare_TightPiccolo     = {"Tight Funk Birch 13\" Piccolo",   260.0f, 225.0f, 0.25f, 0.65f, 0.45f, 0.40f, 0.55f, false};
+    constexpr DrumShellProfile kSnare_VintageMaple     = {"5.5x14 Studio Maple All-Round",  310.0f, 195.0f, 0.50f, 0.75f, 0.78f, 0.48f, 0.50f, false};
+    constexpr DrumShellProfile kSnare_Supraphonic400   = {"Ludwig Supraphonic 400 Aluminum", 320.0f, 210.0f, 0.50f, 0.70f, 0.32f, 0.52f, 0.38f, false};
+    constexpr DrumShellProfile kSnare_80sGatedPower    = {"80s Power Gated Rock Snare",      280.0f, 170.0f, 0.75f, 0.85f, 0.50f, 0.65f, 0.45f, false};
+    constexpr DrumShellProfile kSnare_NashvilleWood    = {"Nashville Solid Maple Wood-Hoop", 330.0f, 165.0f, 0.65f, 0.80f, 0.85f, 0.45f, 0.60f, false};
+    constexpr DrumShellProfile kSnare_ReggaeSoprano    = {"Reggae High Soprano 10\" Snare",  250.0f, 260.0f, 0.20f, 0.60f, 0.40f, 0.35f, 0.35f, false};
 
-    // 3. Tom Profiles
-    constexpr DrumShellProfile kTom_Rack12          = {"12-Inch Rack Tom",          240.0f, 130.0f, 0.55f, 0.70f, 0.70f, 0.00f, 0.45f};
-    constexpr DrumShellProfile kTom_Floor16         = {"16-Inch Floor Tom",         175.0f,  85.0f, 0.80f, 0.80f, 0.75f, 0.00f, 0.40f};
-    constexpr DrumShellProfile kTom_Bonham18        = {"18-Inch Bonham Low Tom",    150.0f,  68.0f, 0.95f, 0.85f, 0.78f, 0.00f, 0.30f};
+    // 3. Tom Profiles (4 Profiles)
+    constexpr DrumShellProfile kTom_Rack10Fusion       = {"10-Inch Fusion High Tom",         260.0f, 160.0f, 0.45f, 0.65f, 0.68f, 0.00f, 0.40f, false};
+    constexpr DrumShellProfile kTom_Rack12             = {"12-Inch Classic Studio Rack Tom", 240.0f, 130.0f, 0.55f, 0.70f, 0.70f, 0.00f, 0.45f, false};
+    constexpr DrumShellProfile kTom_Floor16            = {"16-Inch Deep Studio Floor Tom",   175.0f,  85.0f, 0.80f, 0.80f, 0.75f, 0.00f, 0.40f, false};
+    constexpr DrumShellProfile kTom_Bonham18           = {"18-Inch Bonham Low Thunder Tom",  150.0f,  68.0f, 0.95f, 0.85f, 0.78f, 0.00f, 0.30f, false};
 
-    // 4. Cajon & World Percussion Profiles
-    constexpr DrumShellProfile kCajon_DeepFlamenco  = {"Flamenco Deep Cajon",       190.0f,  65.0f, 0.85f, 0.75f, 0.80f, 0.35f, 0.50f};
-    constexpr DrumShellProfile kCajon_CrispAcoustic = {"Acoustic Gig Cajon",        220.0f,  72.0f, 0.75f, 0.70f, 0.75f, 0.45f, 0.45f};
-    constexpr DrumShellProfile kPerc_CongaTumbao    = {"Deep Quinto / Conga",       280.0f, 190.0f, 0.70f, 0.65f, 0.70f, 0.00f, 0.60f};
-    constexpr DrumShellProfile kPerc_DjembeBass     = {"African Djembe Bass",       160.0f,  55.0f, 0.90f, 0.80f, 0.75f, 0.00f, 0.35f};
+    // 4. Cymbals & Bronze (5 Profiles)
+    constexpr DrumShellProfile kCymbal_TurkishRide22   = {"Dark Turkish Ride 22\" (B20 Bronze)", 450.0f, 2200.0f, 0.85f, 0.75f, 0.55f, 0.40f, 0.30f, true};
+    constexpr DrumShellProfile kCymbal_Vintage60sHats  = {"Vintage 60s A-Style 14\" Hi-Hats",    350.0f, 2600.0f, 0.55f, 0.80f, 0.40f, 0.50f, 0.50f, true};
+    constexpr DrumShellProfile kCymbal_FastCrash18     = {"Fast Studio Bronze Crash 18\"",       500.0f, 1800.0f, 0.70f, 0.85f, 0.45f, 0.35f, 0.25f, true};
+    constexpr DrumShellProfile kCymbal_HeavyRockRide21 = {"Heavy Rock Bell Ride 21\"",          400.0f, 2400.0f, 0.80f, 0.70f, 0.35f, 0.65f, 0.35f, true};
+    constexpr DrumShellProfile kCymbal_TrashChina16    = {"Thin White-Bronze China / Trash 16\"", 600.0f, 2000.0f, 0.60f, 0.90f, 0.30f, 0.25f, 0.20f, true};
 
-    constexpr int kTotalProfiles = 15;
+    // 5. Cajons & World Percussion (5 Profiles)
+    constexpr DrumShellProfile kCajon_DeepFlamenco     = {"Flamenco Deep Acoustic Cajon",     190.0f,  65.0f, 0.85f, 0.75f, 0.80f, 0.40f, 0.50f, false};
+    constexpr DrumShellProfile kCajon_CrispAcoustic    = {"Acoustic Gig Live Cajon",          220.0f,  72.0f, 0.75f, 0.70f, 0.75f, 0.45f, 0.45f, false};
+    constexpr DrumShellProfile kPerc_CongaTumbao       = {"Afro-Cuban Conga / Quinto Tumbao", 280.0f, 190.0f, 0.70f, 0.65f, 0.70f, 0.00f, 0.60f, false};
+    constexpr DrumShellProfile kPerc_DjembeBass        = {"African Djembe Deep Bass",         160.0f,  55.0f, 0.90f, 0.80f, 0.75f, 0.00f, 0.35f, false};
+    constexpr DrumShellProfile kPerc_TimbaleCowbell    = {"Latin Timbale & Cowbell Rim",      350.0f, 240.0f, 0.30f, 0.60f, 0.35f, 0.00f, 0.25f, false};
+
+    constexpr int kTotalProfiles = 30;
     constexpr DrumShellProfile kAllProfiles[kTotalProfiles] = {
-        kKick_70sDryDead,
+        // Kicks 0..7
         kKick_26BonhamMaple,
+        kKick_70sDryDead,
         kKick_ModernBirch,
         kKick_SubCannon808,
-        kSnare_Fat70sWallet,
+        kKick_MetalClick,
+        kKick_Vintage60sDown,
+        kKick_FunkTightBirch,
+        kKick_TrapAnalog808,
+        // Snares 8..15
         kSnare_BlackBeauty,
+        kSnare_Fat70sWallet,
         kSnare_TightPiccolo,
         kSnare_VintageMaple,
+        kSnare_Supraphonic400,
+        kSnare_80sGatedPower,
+        kSnare_NashvilleWood,
+        kSnare_ReggaeSoprano,
+        // Toms 16..19
+        kTom_Rack10Fusion,
         kTom_Rack12,
         kTom_Floor16,
         kTom_Bonham18,
+        // Cymbals 20..24
+        kCymbal_TurkishRide22,
+        kCymbal_Vintage60sHats,
+        kCymbal_FastCrash18,
+        kCymbal_HeavyRockRide21,
+        kCymbal_TrashChina16,
+        // Cajons & Percussion 25..29
         kCajon_DeepFlamenco,
         kCajon_CrispAcoustic,
         kPerc_CongaTumbao,
-        kPerc_DjembeBass
+        kPerc_DjembeBass,
+        kPerc_TimbaleCowbell
     };
 }
 
 class FluidDrumKitMorpherDSP {
 private:
     FluidDrumShellDSP virtualShell;
+    FluidCymbalDSP    virtualCymbal;
 
     // State variables for the Boxy Shell De-Resonator (2nd-order state-variable notch/scoop)
     float bpState = 0.0f;
@@ -407,11 +499,13 @@ public:
     void prepare(float sr) noexcept {
         sampleRate = sr > 8000.0f ? sr : 48000.0f;
         virtualShell.prepare(sampleRate);
+        virtualCymbal.prepare(sampleRate);
         bpState = lpState = woodViscosityState = 0.0f;
     }
 
     void reset() noexcept {
         virtualShell.reset();
+        virtualCymbal.reset();
         bpState = lpState = woodViscosityState = 0.0f;
     }
 
@@ -419,7 +513,6 @@ public:
     float getHeadDisplacement() const noexcept { return virtualShell.getHeadDisplacement(); }
     float getWireActivity() const noexcept { return virtualShell.getWireActivity(); }
 
-    // morphAmount: 0.0f = 100% Original Raw Mic, 1.0f = 100% Re-Shelled Studio Kit
     inline float processSample(float liveMicInput, 
                                const DrumShellProfile& profile, 
                                float morphAmount = 0.85f,
@@ -430,57 +523,54 @@ public:
                                float customWireBuzz = -1.0f,
                                float sympatheticBleed = 0.0f) noexcept 
     {
-        // --------------------------------------------------------------------
-        // 1. SUBTRACT ORIGINAL DRUM'S "CARDBOARD BOX" MUD (Zero-Phase Bleed Safe)
-        // --------------------------------------------------------------------
-        // Isolates the boxy 150Hz-350Hz resonance of the physical room/cheap shell
-        // and phase-cancels it BEFORE building the new drum body!
+        if (profile.isCymbal) {
+            // Cymbal branch: Bronze plate flexural dispersion & shimmer
+            const float bellF = customTuningHz > 500.0f ? customTuningHz : profile.targetFundamentalHz;
+            const float bowF = 550.0f;
+            const float shimmer = customVentChoke >= 0.0f ? customVentChoke : profile.ventChokeAmount;
+            const float visc = profile.woodViscosity;
+
+            float cymbalOut = virtualCymbal.processSample(liveMicInput, bellF, bowF, shimmer, visc);
+            return (liveMicInput * (1.0f - morphAmount)) + (cymbalOut * morphAmount);
+        }
+
+        // Drum Shell branch: Boxy mud cancellation + pneumatic air-spring chamber
         const float boxyCut = std::clamp(profile.originalBoxyCutHz, 50.0f, 1000.0f);
         const float f = std::clamp(2.0f * 3.14159265f * boxyCut / sampleRate, 0.005f, 0.45f);
-        const float qDamp = 0.75f; // Wide enough to scoop cardboard mud, narrow enough to save transient
+        const float qDamp = 0.75f;
         
         const float hp = liveMicInput - lpState - qDamp * bpState;
         bpState += f * hp;
         lpState += f * bpState;
 
-        // Subtract the isolated boxy ring proportionally to morphAmount & deBoxIntensity
         const float deBoxedExcitation = liveMicInput - (bpState * deBoxIntensity * morphAmount);
 
-        // --------------------------------------------------------------------
-        // 2. WOOD SHELL VISCOSITY & DAMPING SHAPING (Maple vs. Birch vs. Brass vs. Cajon)
-        // --------------------------------------------------------------------
         woodViscosityState = (woodViscosityState * profile.woodViscosity) 
                            + (deBoxedExcitation * (1.0f - profile.woodViscosity));
         const float shapedExcitation = (deBoxedExcitation * (1.0f - profile.headDamping * 0.45f)) 
                                      + (woodViscosityState * profile.headDamping * 0.45f);
 
-        // Determine effective parameters (allowing custom GUI overrides or profile defaults)
         const float tuningHz = customTuningHz > 20.0f ? customTuningHz : profile.targetFundamentalHz;
         const float depthScalar = customDepth > 0.05f ? customDepth : profile.shellDepthScalar;
         const float ventChoke = customVentChoke >= 0.0f ? customVentChoke : profile.ventChokeAmount;
         const float wireBuzz = customWireBuzz >= 0.0f ? customWireBuzz : profile.snareWireBuzz;
 
-        // --------------------------------------------------------------------
-        // 3. DRIVE THE NEW VIRTUAL FLUID SHELL
-        // --------------------------------------------------------------------
         const float newShellOutput = virtualShell.processSample(
             shapedExcitation,
             tuningHz,
             depthScalar,
             ventChoke,
             wireBuzz,
-            1.0f - (profile.headDamping * 0.5f), // Less high-air ring when heavily damped
+            1.0f - (profile.headDamping * 0.5f),
             sympatheticBleed
         );
 
-        // Seamless wet/dry blend between raw studio mic and re-shelled drum
         return (liveMicInput * (1.0f - morphAmount)) + (newShellOutput * morphAmount);
     }
 };
 
 // ============================================================================
 // Stage 3: Studio 4-Band Drum Parametric EQ (Active 3D Tone Matrix)
-// Low Shelf (Thump), Lo-Mid Boxiness Cut, Hi-Mid Attack/Crack, High Sizzle Shelf
 // ============================================================================
 class Drum4BandEQ {
 public:
@@ -501,13 +591,9 @@ public:
                          float highMidFreq, float highMidGainDb,
                          float highGainDb) {
         float sample = in;
-        // Band 0: Low Shelf (80 Hz)
         sample = processFilter(0, sample, 80.0f, lowGainDb, 0.707f, FilterType::LowShelf);
-        // Band 1: Low-Mid Parametric Boxiness Cut (200-800 Hz)
         sample = processFilter(1, sample, lowMidFreq, lowMidGainDb, 1.4f, FilterType::Peak);
-        // Band 2: High-Mid Parametric Attack/Crack (1.5-6.5 kHz)
         sample = processFilter(2, sample, highMidFreq, highMidGainDb, 1.2f, FilterType::Peak);
-        // Band 3: High Air Sizzle Shelf (10.5 kHz)
         sample = processFilter(3, sample, 10500.0f, highGainDb, 0.707f, FilterType::HighShelf);
         return sample;
     }
@@ -529,7 +615,6 @@ private:
             computeCoefficients(idx, freq, gainDb, Q, type);
         }
 
-        // Transposed Direct Form II
         float out = b0[idx] * in + s1[idx];
         s1[idx] = b1[idx] * in - a1[idx] * out + s2[idx];
         s2[idx] = b2[idx] * in - a2[idx] * out;
@@ -578,7 +663,7 @@ private:
             float two_sqrt_A_alpha = 2.0f * std::sqrt(A) * alpha;
             float b0_raw = A * ((A + 1.0f) + (A - 1.0f) * cosw0 + two_sqrt_A_alpha);
             float b1_raw = -2.0f * A * ((A - 1.0f) + (A + 1.0f) * cosw0);
-            float b2_raw = A * ((A + 1.0f) + (A - 1.0f) * cosw0 - two_sqrt_A_alpha);
+            float b2_raw = A * ((A + 1.0f) - (A - 1.0f) * cosw0 - two_sqrt_A_alpha);
             float a0_raw = (A + 1.0f) - (A - 1.0f) * cosw0 + two_sqrt_A_alpha;
             float a1_raw = 2.0f * ((A - 1.0f) - (A + 1.0f) * cosw0);
             float a2_raw = (A + 1.0f) - (A - 1.0f) * cosw0 - two_sqrt_A_alpha;
@@ -595,7 +680,6 @@ private:
 
 // ============================================================================
 // Stage 4: World-Class Modulated Dual-Tank Drum Reverb Space
-// Studio Drum Booth, Gated Live Arena Room, and Vintage Snare Plate
 // ============================================================================
 class DrumFluidReverb {
 private:
@@ -603,7 +687,6 @@ private:
     float preDelayBuf[kMaxPreDelay] = {0.0f};
     int preDelayWrite = 0;
 
-    // 4 Schroeder-Dattorro Input Allpass Diffusers
     static constexpr int kDiff1Len = 228;
     static constexpr int kDiff2Len = 172;
     static constexpr int kDiff3Len = 610;
@@ -612,7 +695,6 @@ private:
     float diff3Buf[kDiff3Len] = {0.0f}, diff4Buf[kDiff4Len] = {0.0f};
     int diff1Idx = 0, diff2Idx = 0, diff3Idx = 0, diff4Idx = 0;
 
-    // Dual Cross-Coupled Modulated Tanks (Tank A & Tank B)
     static constexpr int kTankA1Len = 7120;
     static constexpr int kTankA2Len = 5900;
     static constexpr int kTankB1Len = 7500;
@@ -621,11 +703,9 @@ private:
     float tankB1Buf[kTankB1Len] = {0.0f}, tankB2Buf[kTankB2Len] = {0.0f};
     int tankA1Idx = 0, tankA2Idx = 0, tankB1Idx = 0, tankB2Idx = 0;
 
-    // Low-Pass Damp Filters in each tank
     float dampStateA = 0.0f, dampStateB = 0.0f;
     float sendHpStateL = 0.0f, sendHpStateR = 0.0f;
 
-    // LFO Modulation Phase
     float lfoPhase1 = 0.17f;
     float lfoPhase2 = 0.63f;
 
@@ -670,7 +750,6 @@ public:
         sendHpStateL = sendHpStateR = 0.0f;
     }
 
-    // algorithm: 0 = Studio Drum Booth, 1 = Arena Live Hall, 2 = Vintage Snare Plate
     inline void processStereo(float inL, float inR,
                               float size, float highCutHz, float decayNorm, float mixNorm,
                               int algorithm, float& outL, float& outR) noexcept
@@ -681,14 +760,12 @@ public:
             return;
         }
 
-        // Send High-Pass Filter (eliminates mud below 80 Hz on Room/Hall, or 180 Hz on Plate)
         const float hpCut = (algorithm == 2) ? 180.0f : 80.0f;
         const float hpAlpha = 1.0f - std::exp(-2.0f * 3.14159265f * hpCut / sampleRate);
         sendHpStateL += (inL - sendHpStateL) * hpAlpha;
         sendHpStateR += (inR - sendHpStateR) * hpAlpha;
         const float monoSend = 0.5f * ((inL - sendHpStateL) + (inR - sendHpStateR));
 
-        // Pre-Delay: 0ms on Booth, 22ms on Arena Hall, 4ms on Plate
         const float preDelayMs = (algorithm == 1) ? 22.0f : (algorithm == 2 ? 4.0f : 0.0f);
         const int preDelaySamples = std::clamp(static_cast<int>(preDelayMs * 0.001f * sampleRate), 0, kMaxPreDelay - 1);
         preDelayBuf[preDelayWrite] = monoSend;
@@ -696,7 +773,6 @@ public:
         const float delayedSend = preDelayBuf[preReadIdx];
         preDelayWrite = (preDelayWrite + 1) % kMaxPreDelay;
 
-        // 4 Input Allpass Diffusers
         const float diffCoeff1 = (algorithm == 2) ? 0.82f : 0.75f;
         const float diffCoeff2 = (algorithm == 2) ? 0.72f : 0.65f;
 
@@ -713,7 +789,6 @@ public:
         diffSig = processAP(diffSig, diff3Buf, kDiff3Len, diff3Idx, diffCoeff2);
         diffSig = processAP(diffSig, diff4Buf, kDiff4Len, diff4Idx, diffCoeff2);
 
-        // LFO Phase Modulation
         const float lfoRate1 = (algorithm == 2) ? 1.45f : 0.75f;
         const float lfoRate2 = (algorithm == 2) ? 1.15f : 0.55f;
         lfoPhase1 += lfoRate1 / sampleRate;
@@ -725,19 +800,15 @@ public:
         const float modOffset1 = FluidMath::fast_sin(lfoPhase1 * 6.2831853f) * lfoDepth;
         const float modOffset2 = FluidMath::fast_sin(lfoPhase2 * 6.2831853f) * lfoDepth;
 
-        // Feedback Decay Loop
         const float maxDecay = (algorithm == 1) ? 0.94f : (algorithm == 2 ? 0.92f : 0.78f);
         const float loopFeedback = std::clamp(decayNorm * maxDecay, 0.10f, 0.95f);
 
-        // High-Cut Damping
         const float dampCut = std::clamp(highCutHz, 1200.0f, 16000.0f);
         const float dampCoeff = 1.0f - std::exp(-2.0f * 3.14159265f * dampCut / sampleRate);
 
-        // Tank A Processing
         float tankAIn = diffSig + tankB2Buf[tankB2Idx] * loopFeedback;
-        tankAIn = FluidMath::fast_tanh(tankAIn * 0.95f); // Soft fluid non-linearity in tank
+        tankAIn = FluidMath::fast_tanh(tankAIn * 0.95f);
 
-        // Tank A1 with Hermite cubic modulation
         float readPosA1 = static_cast<float>(tankA1Idx) - (kTankA1Len * 0.5f * size + modOffset1);
         while (readPosA1 < 0.0f) readPosA1 += kTankA1Len;
         float tankA1Out = readHermite(tankA1Buf, kTankA1Len, readPosA1);
@@ -751,7 +822,6 @@ public:
         tankA2Buf[tankA2Idx] = tankA2In;
         tankA2Idx = (tankA2Idx + 1) % kTankA2Len;
 
-        // Tank B Processing
         float tankBIn = diffSig + tankA2Out * loopFeedback;
         tankBIn = FluidMath::fast_tanh(tankBIn * 0.95f);
 
@@ -767,7 +837,6 @@ public:
         tankB2Buf[tankB2Idx] = tankB2In;
         tankB2Idx = (tankB2Idx + 1) % kTankB2Len;
 
-        // 14-Tap Spatial Stereo Extraction Matrix
         float wetL = (tankA1Buf[(tankA1Idx + 189) % kTankA1Len] * 0.35f)
                    + (tankA1Buf[(tankA1Idx + 2980) % kTankA1Len] * 0.40f)
                    - (tankA2Buf[(tankA2Idx + 1420) % kTankA2Len] * 0.35f)
@@ -780,7 +849,6 @@ public:
                    + (tankA1Buf[(tankA1Idx + 420) % kTankA1Len] * 0.30f)
                    - (tankA2Buf[(tankA2Idx + 2190) % kTankA2Len] * 0.28f);
 
-        // Mix Wet & Dry
         outL = inL * (1.0f - mixNorm) + wetL * mixNorm * 1.35f;
         outR = inR * (1.0f - mixNorm) + wetR * mixNorm * 1.35f;
     }
@@ -788,7 +856,6 @@ public:
 
 // ============================================================================
 // Master Drum Preamp Engine (Single Channel / Monolithic Unit)
-// Combines Denoiser, Kit Morpher, 4-Band Sculpting EQ, and Reverb
 // ============================================================================
 class CyberDrumEngine {
 public:
@@ -811,7 +878,6 @@ public:
         reverb.reset();
     }
 
-    // Process mono drum channel through the complete fluid chain
     inline float processMonoDrum(float inSample,
                                  float denoiseAmt, float denoiseThresh, bool denoiseShield, bool denoiseListen,
                                  int profileIndex, float morphAmount, float deBoxIntensity,
@@ -819,17 +885,14 @@ public:
                                  float eqLow, float eqLowMidF, float eqLowMidG, float eqHighMidF, float eqHighMidG, float eqHigh,
                                  float sympatheticBleed = 0.0f)
     {
-        // 1. Denoise stage
         float cleaned = denoiseListen ? denoiser.process(inSample, denoiseAmt, denoiseThresh, denoiseShield, true)
                                       : denoiser.process(inSample, denoiseAmt, denoiseThresh, denoiseShield, false);
         if (denoiseListen) return cleaned;
 
-        // 2. Drum Kit Morpher & Fluid Shell
         const auto& profile = DrumKitProfiles::kAllProfiles[std::clamp(profileIndex, 0, DrumKitProfiles::kTotalProfiles - 1)];
         float reShelled = morpher.processSample(cleaned, profile, morphAmount, deBoxIntensity,
                                                 customTuningHz, customDepth, customVentChoke, customWireBuzz, sympatheticBleed);
 
-        // 3. Studio 4-Band EQ
         float equalized = eq.process(reShelled, eqLow, eqLowMidF, eqLowMidG, eqHighMidF, eqHighMidG, eqHigh);
 
         return equalized;
