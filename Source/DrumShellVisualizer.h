@@ -239,7 +239,7 @@ public:
                 g.setGradientFill(congaGrad);
                 g.fillPath(congaPath);
                 g.setColour(juce::Colour(0xff290f0a));
-                g.drawPath(congaPath, 1.5f);
+                g.strokePath(congaPath, juce::PathStrokeType(1.5f));
 
                 // Rawhide Head & Chrome Crown Hoop
                 auto crownRect = juce::Rectangle<float>(shellX + 4.0f, shellY + vibOffset, shellW - 8.0f, rimHeight);
@@ -265,7 +265,7 @@ public:
                 g.setGradientFill(djembeGrad);
                 g.fillPath(djembePath);
                 g.setColour(juce::Colour(0xff120c08));
-                g.drawPath(djembePath, 1.5f);
+                g.strokePath(djembePath, juce::PathStrokeType(1.5f));
 
                 // Traditional rope tension lacing
                 g.setColour(juce::Colour(0xffd97706).withAlpha(0.65f));
