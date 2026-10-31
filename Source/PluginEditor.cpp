@@ -118,6 +118,23 @@ CyberDrumEditor::CyberDrumEditor(CyberDrumProcessor& p)
     drumProfileBox.addItemList(profileNames, 1);
     drumProfileAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
         audioProcessor.apvts, "drumProfile", drumProfileBox);
+    lastSyncedProfile = drumProfileBox.getSelectedItemIndex();
+
+    drumProfileBox.onChange = [this]() {
+        int idx = drumProfileBox.getSelectedItemIndex();
+        if (!isLoadingPreset && idx >= 0 && idx < CyberDrum::DrumKitProfiles::kTotalProfiles && idx != lastSyncedProfile) {
+            lastSyncedProfile = idx;
+            const auto& prof = CyberDrum::DrumKitProfiles::kAllProfiles[idx];
+            auto setParam = [this](const juce::String& paramId, float value) {
+                if (auto* param = audioProcessor.apvts.getParameter(paramId))
+                    param->setValueNotifyingHost(param->convertTo0to1(value));
+            };
+            setParam("customTuning", prof.targetFundamentalHz);
+            setParam("shellDepth", prof.shellDepthScalar);
+            setParam("ventChoke", prof.ventChokeAmount * 100.0f);
+            setParam("snareWireBuzz", prof.snareWireBuzz * 100.0f);
+        }
+    };
 
     setupRotary(morphAmountSlider, morphAmountLabel, "SHELL MORPH", "%");
     morphAmountAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
@@ -125,7 +142,7 @@ CyberDrumEditor::CyberDrumEditor(CyberDrumProcessor& p)
 
     addAndMakeVisible(visualizer);
 
-    setupRotary(customTuningSlider, customTuningLabel, "TUNING", " Hz");
+    setupRotary(customTuningSlider, customTuningLabel, "SIZE / TUNE", " Hz");
     customTuningAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         audioProcessor.apvts, "customTuning", customTuningSlider);
 
@@ -244,6 +261,7 @@ void CyberDrumEditor::timerCallback()
 
 void CyberDrumEditor::loadPreset(int id)
 {
+    isLoadingPreset = true;
     auto setVal = [this](const juce::String& paramId, float value) {
         if (auto* param = audioProcessor.apvts.getParameter(paramId))
             param->setValueNotifyingHost(param->convertTo0to1(value));
@@ -474,6 +492,8 @@ void CyberDrumEditor::loadPreset(int id)
             setVal("reverbMix", 24.0f); setVal("reverbDecay", 35.0f); setVal("reverbSize", 1.25f); setVal("reverbTone", 7500.0f);
             break;
     }
+    lastSyncedProfile = drumProfileBox.getSelectedItemIndex();
+    isLoadingPreset = false;
 }
 
 void CyberDrumEditor::paint(juce::Graphics& g)

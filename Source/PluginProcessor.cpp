@@ -236,14 +236,14 @@ void CyberDrumProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                                                             profileIndex, morphAmount, deBoxAmount,
                                                             customTuningHz, customDepth, ventChoke, snareWireBuzz,
                                                             eqLow, eqLowMidF, eqLowMidG, eqHighMidF, eqHighMidG, eqHigh,
-                                                            rawR * sympatheticBleed);
+                                                            rawR * sympatheticBleed, stickSnap);
 
             float processedR = dspEngineRight.processMonoDrum(rawR,
                                                              denoiseAmt, denoiseThresh, denoiseHarmonicShield, denoiseListen,
                                                              profileIndex, morphAmount, deBoxAmount,
                                                              customTuningHz, customDepth, ventChoke, snareWireBuzz,
                                                              eqLow, eqLowMidF, eqLowMidG, eqHighMidF, eqHighMidG, eqHigh,
-                                                             rawL * sympatheticBleed);
+                                                             rawL * sympatheticBleed, stickSnap);
 
             // Stereo Width (M/S Adjust)
             float mid = 0.5f * (processedL + processedR);
@@ -309,7 +309,7 @@ void CyberDrumProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                                                                profileIndex, morphAmount, deBoxAmount,
                                                                customTuningHz, customDepth, ventChoke, snareWireBuzz,
                                                                eqLow, eqLowMidF, eqLowMidG, eqHighMidF, eqHighMidG, eqHigh,
-                                                               0.0f);
+                                                               0.0f, stickSnap);
 
             float outWetL = 0.0f, outWetR = 0.0f;
             dspEngineLeft.reverb.processStereo(processedMono, processedMono, revSize, revTone, revDecay, revMix, revType, outWetL, outWetR);

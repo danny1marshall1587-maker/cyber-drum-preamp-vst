@@ -1,11 +1,21 @@
-# Cyber Drum Preamp v1.1.0
-### Fluid Space Drum Shell, Cymbal & Percussion Engine: Pneumatic Shells, Bronze Shimmer & 0ms Physical Re-Shelling
+# Cyber Drum Preamp v1.2.0
+### Fluid Space Drum Shell, Cymbal & Percussion Engine: 2-DOF Coupled Cytomic SVF Cavity, Pneumatic Shells & Bronze Shimmer
 **Free & Open Source Standalone App (with ASIO), VST3, AU, and LV2 Plugin for Windows, macOS, and Linux.**
 
 ---
 
-## What's New in v1.1.0
+## What's New in v1.2.0 (Acoustic-Sim Coupled Cavity Architecture)
 
+- **2-DOF Coupled Cytomic SVF Acoustic Cavity (`FluidDrumShellDSP`)**:
+  - Replaced the Euler mass-spring loop with the unconditionally stable **2-Degree-of-Freedom Coupled Cytomic State-Variable Filter (SVF) Cavity** architecture from `Cyber Acoustic Preamp` (`f_A0` Helmholtz Air Port / Cavity Mode + `f_T1` Batter Head / Wooden Tapa Mode).
+  - **Zero Self-Oscillation**: Passive trapezoidal SVF integration (`g / (1 + g*(g + k))`) guarantees 100% silence when no audio is playing—eliminating any continuous sine-wave drone.
+- **Acoustic-Sim Style Size & Depth Tuning**:
+  - Adjusting **SIZE / TUNE** or **SHELL DEPTH** scales both the Helmholtz air port mode ($f_{A0}$) and the batter/tapa structural mode ($f_{T1}$) together ($f_{A0} \propto \text{tuningRatio} / \sqrt{\text{depthRatio}}$), while **SHELL DEPTH** also adjusts the physical balance between deep Helmholtz air sub-thump and top-head wood bark—just like changing body size and depth in `Cyber Acoustic Preamp`.
+  - Selecting any profile in the **30 Drum & Percussion Profiles** dropdown automatically updates the **SIZE / TUNE**, **SHELL DEPTH**, **VENT CHOKE**, and **SNARE WIRES** knobs to that instrument's natural tuning and geometry.
+- **Glitch-Free Per-Sample Smoothed Geometry & Hermite Air-Mic Interpolation (`DrumAirMicDSP`)**:
+  - All filter cutoffs (`smoothF_A0`, `smoothF_T1`, `smoothBoxHz`, `smoothDepth`), air-column delay pointers (`smoothPlateDelay`, `smoothHoleDelay` with 4-point Hermite cubic interpolation), and reverb tank dimensions (`smoothRevSize`) are ramped per sample (`~20 ms` one-pole) so sweeping **SIZE / TUNE** or **SHELL DEPTH** while playing produces zero thumping, clicks, or "farting" artifacts.
+- **Strict Input-Gated & Drum-Modulated Snare Wires**:
+  - Snare wire and cajon guitar-string sizzle is strictly gated to real input hits above `-50 dBFS` (`wireEnvelope > 0.003f`), shaped through a $3.4\text{ kHz}$ Cytomic SVF bandpass/highpass network, and modulated by the resonant cavity wave—dropping to complete silence (`0.0f`) between hits.
 - **30 World-Class Drum, Cymbal & Percussion Profiles**:
   - **8 Kicks**: Bonham 26", 70s Tea-Towel, Modern Birch 22", Sub-Piston Cannon 24", Metal Click Sub-Drop, Vintage 60s Downbeat 20", Heavy Funk Tight Birch 20", Trap/Electronic 808 Sub Boom.
   - **8 Snares**: 6.5x14 Bell Brass Black Beauty, 70s Fat Dead Wallet, Tight Funk 13" Piccolo, 5.5x14 Studio Maple, Ludwig Supraphonic 400 Aluminum, 80s Power Gated Rock Snare, Nashville Solid Maple Wood-Hoop, Reggae High Soprano 10".
@@ -123,7 +133,7 @@
 ## Pre-Built Binaries
 
 Pre-compiled binary releases for **Windows (x64)**, **macOS (Universal Apple Silicon & Intel)**, and **Linux (x64)** are available on the GitHub Releases page:
-👉 **[Download Latest Release v1.1.0](https://github.com/danny1marshall1587-maker/cyber-drum-preamp-vst/releases/tag/v1.1.0)**
+👉 **[Download Latest Release v1.2.0](https://github.com/danny1marshall1587-maker/cyber-drum-preamp-vst/releases/tag/v1.2.0)**
 
 ---
 

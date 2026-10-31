@@ -20,7 +20,7 @@ namespace FluidMath {
         return x * (27.0f + x2) / (27.0f + 9.0f * x2);
     }
 
-    // Polynomial fluid boundary transfer curve
+    // Polynomial fluid boundary transfer curve (strictly bounded on tanh(x) per Rule 32)
     inline float fluidTransfer(float x, float shape = 0.35f) noexcept {
         const float tx = fast_tanh(x);
         return tx * (1.0f - shape) + (tx * tx * tx) * shape;
@@ -34,11 +34,15 @@ namespace FluidMath {
         const float P = 0.225f;
         return P * (y * std::abs(y) - y) + y;
     }
+
+    inline float flush_denormal(float v) noexcept {
+        return (std::abs(v) < 1e-20f) ? 0.0f : v;
+    }
 }
 
 // ============================================================================
 // Stage 0: 10-Band Drum Cyber-Denoiser PRO (0ms Zero-Latency Subtraction)
-// Removes mic preamp hiss, pedal squeaks, stage hum, and bleed noise
+// Identical continuous subtractive topology to CyberAcousticEngine
 // ============================================================================
 class DrumCyberDenoiser {
 public:
@@ -52,11 +56,12 @@ public:
             return 1.0f - std::exp(-2.0f * 3.14159265f * norm);
         };
 
-        mHpF = getCoeff(25.0f);     // 25 Hz sub rumble filter
+        mHpF = getCoeff(22.0f);        // 22 Hz sub-rumble filter
         mLpF_cut = getCoeff(19000.0f); // 19 kHz ultrasonic ceiling
 
-        mLevelAtt = getCoeff(1000.0f); // 1 ms instantaneous peak attack
-        mLevelRel = getCoeff(12.0f);   // 85 ms smooth organic release
+        mLevelAtt = getCoeff(1200.0f); // < 1 ms instantaneous peak attack
+        mLevelRel = getCoeff(14.0f);   // Smooth organic release
+        mGainAtt  = getCoeff(1800.0f); // Instantaneous gate opening on drum transients
 
         const float multi[9] = { 60.0f, 150.0f, 350.0f, 750.0f, 1500.0f, 3000.0f, 5000.0f, 8500.0f, 13000.0f };
         for (int i = 0; i < 9; ++i) {
@@ -114,7 +119,7 @@ public:
             }
         }
 
-        // Harmonic Shield for Drum Fundamentals (45 Hz to 250 Hz)
+        // Harmonic Shield for Drum Fundamentals (40 Hz to 350 Hz)
         float fundamentalActivity = 0.0f;
         if (harmonicShield) {
             for (int fBand = 0; fBand <= 2; ++fBand) {
@@ -124,7 +129,9 @@ public:
             }
         }
 
+        const float floorVal = 0.06f;
         float outSum = 0.0f;
+
         for (int i = 0; i < NUM_BANDS; ++i) {
             float absVal = std::abs(b[i]);
             float coeff = (absVal > levelStates[i]) ? mLevelAtt : mLevelRel;
@@ -136,26 +143,30 @@ public:
                 effectiveThresh *= (1.0f - 0.65f * fundamentalActivity);
             }
 
-            float targetGain = 1.0f;
-            if (r < effectiveThresh) {
-                float diffDb = 20.0f * std::log10((r + 1e-9f) / effectiveThresh);
-                float attDb = diffDb * reductionNorm * 1.6f;
-                attDb = std::clamp(attDb, -45.0f, 0.0f);
-                targetGain = std::pow(10.0f, attDb / 20.0f);
-            }
+            // Continuous subtractive gain formula (same as CyberAcousticEngine)
+            float targetG = 1.0f - (effectiveThresh / (r + 1e-9f));
+            targetG = std::max(floorVal, std::min(1.0f, targetG));
 
-            // Non-zero floor (0.08) ensures natural decay into silence without squelch
-            targetGain = std::max(targetGain, 0.08f);
-            currentGains[i] += (targetGain - currentGains[i]) * 0.15f;
+            float scaledTargetG = 1.0f - reductionNorm * (1.0f - targetG);
 
-            if (listenNoise) {
-                outSum += b[i] * (1.0f - currentGains[i]);
+            float currentCoeff;
+            if (scaledTargetG > currentGains[i]) {
+                currentCoeff = mGainAtt;
             } else {
-                outSum += b[i] * currentGains[i];
+                float tailDist = (currentGains[i] - floorVal) / (1.01f - floorVal);
+                float tailStab = 1.0f + (1.0f - std::clamp(tailDist, 0.0f, 1.0f)) * 8.0f;
+                currentCoeff = mLevelRel / tailStab;
             }
+            currentGains[i] += (scaledTargetG - currentGains[i]) * currentCoeff;
+
+            outSum += b[i] * currentGains[i];
         }
 
-        return outSum;
+        if (listenNoise) {
+            return FluidMath::flush_denormal(s0 - outSum);
+        }
+
+        return FluidMath::flush_denormal(outSum);
     }
 
 private:
@@ -164,6 +175,7 @@ private:
     float mLpF_cut = 0.0f;
     float mLevelAtt = 0.0f;
     float mLevelRel = 0.0f;
+    float mGainAtt  = 0.0f;
     float mBCoeffs[9] = {0.0f};
 
     float lpStates[9] = {0.0f};
@@ -176,33 +188,245 @@ private:
 };
 
 // ============================================================================
-// Stage 1: Fluid Space Drum Shell & Pneumatic Vent DSP
-// Models pneumatic air compression, adiabatic air springs, membrane pitch-glide,
-// batter-to-resonant head column propagation, and sympathetic wire sizzle
+// Stage 1A: Mechanical Soundboard/Membrane Inertia & Pneumatic Cushion Cell
+// Ported from CyberAcousticEngine::AcousticInertialCell + Pneumatic Vent Sag
+// ============================================================================
+class DrumInertialCell {
+private:
+    float x_prev = 0.0f;
+    float momentum = 0.0f;
+    float sag_envelope = 0.0f;
+    float sample_rate = 48000.0f;
+
+public:
+    void init(float sr) noexcept {
+        sample_rate = sr > 8000.0f ? sr : 48000.0f;
+        reset();
+    }
+
+    void reset() noexcept {
+        x_prev = 0.0f;
+        momentum = 0.0f;
+        sag_envelope = 0.0f;
+    }
+
+    float getChamberPressure() const noexcept {
+        return std::clamp(1.0f - sag_envelope * 0.45f, 0.35f, 1.0f);
+    }
+
+    inline float process(float in_sample, float vent_choke, float wood_density, float stick_snap) noexcept {
+        // Step 1: Bounded input to prevent non-linear overflow
+        float x = FluidMath::fast_tanh(in_sample);
+
+        // Step 2: Instantaneous acoustic velocity (stick / hand attack derivative)
+        float v_str = x - x_prev;
+        x_prev = x;
+
+        // Step 3: Wood / Membrane mass viscosity adaptation
+        float eta_top = std::clamp(0.72f + 0.20f * wood_density, 0.60f, 0.95f);
+        momentum = momentum * eta_top + v_str * (1.0f - eta_top);
+        momentum = std::clamp(momentum, -1.0f, 1.0f);
+
+        // Step 4: Pneumatic air-vent compressive compliance (adiabatic air spring sag)
+        float hit_energy = std::abs(x) * (1.0f + 2.5f * vent_choke);
+        float c_vent = (hit_energy > sag_envelope) ? 0.0045f : 0.00035f;
+        sag_envelope += c_vent * (hit_energy - sag_envelope);
+        float comp_factor = 1.0f - std::clamp(sag_envelope * 0.65f * vent_choke, 0.0f, 0.35f);
+
+        // Step 5: Asymmetric wood/membrane grain transfer (Rule 32 bounded)
+        float u = FluidMath::fast_tanh((x - 0.35f * v_str * (1.0f - eta_top)) * comp_factor);
+        float y_wood = 0.0f;
+        float bloom = 0.18f * wood_density;
+
+        if (u >= 0.0f) {
+            y_wood = u - bloom * u * u * (1.0f - u);
+        } else {
+            float au = std::abs(u);
+            y_wood = u + bloom * (au * au) * (1.0f - au);
+        }
+
+        // Step 6: Re-inject mechanical inertia + Stick/Hand Snap articulation
+        float snap_wave = FluidMath::fast_tanh(momentum * 2.4f) * (stick_snap - 0.5f) * 0.45f;
+        float wet = FluidMath::fast_tanh(y_wood + FluidMath::fast_tanh(momentum) * 0.30f * vent_choke + snap_wave);
+        float out = in_sample * (1.0f - vent_choke * 0.85f) + wet * (vent_choke * 0.85f);
+        return FluidMath::flush_denormal(out);
+    }
+};
+
+// ============================================================================
+// Stage 1B: Fluid Air & Close-Mic Radiation Engine (From CyberAcousticEngine)
+// Uses per-sample smoothed Hermite fractional delay so changing Depth/Size
+// NEVER produces thumps, clicks, or "farting" noises!
+// ============================================================================
+class DrumAirMicDSP {
+private:
+    static constexpr int kMaxAirDelay = 1024;
+    float bodyWaveDelayLine[kMaxAirDelay] = {0.0f};
+    float holeWaveDelayLine[kMaxAirDelay] = {0.0f};
+    int writeIdx = 0;
+
+    float prevInputPressure = 0.0f;
+    float prevSurfaceVelocity = 0.0f;
+    float airSheenState = 0.0f;
+    float helmholtzLowpass = 0.0f;
+    float proximitySubState = 0.0f;
+
+    // Smoothed fractional delay pointers (prevents step-change thumps!)
+    float smoothPlateDelay = 16.0f;
+    float smoothHoleDelay  = 48.0f;
+
+    // All-Pass Acoustic Diffraction States
+    float diffX1 = 0.0f, diffY1 = 0.0f;
+    float diffX2 = 0.0f, diffY2 = 0.0f;
+
+    float sampleRate = 48000.0f;
+
+    static inline float readDelayHermite(const float* buffer, int bufSize, int writePos, float delay) noexcept {
+        float rPos = static_cast<float>(writePos) - delay;
+        while (rPos < 0.0f) rPos += static_cast<float>(bufSize);
+        while (rPos >= static_cast<float>(bufSize)) rPos -= static_cast<float>(bufSize);
+        int i1 = static_cast<int>(rPos);
+        float frac = rPos - static_cast<float>(i1);
+        int mask = bufSize - 1;
+        int i0 = (i1 - 1 + bufSize) & mask;
+        int i2 = (i1 + 1) & mask;
+        int i3 = (i1 + 2) & mask;
+        i1 &= mask;
+
+        float y0 = buffer[i0], y1 = buffer[i1], y2 = buffer[i2], y3 = buffer[i3];
+        float c0 = y1;
+        float c1 = 0.5f * (y2 - y0);
+        float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+        float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+        return ((c3 * frac + c2) * frac + c1) * frac + c0;
+    }
+
+public:
+    void init(float sr) noexcept {
+        sampleRate = sr > 8000.0f ? sr : 48000.0f;
+        reset();
+    }
+
+    void reset() noexcept {
+        std::fill(std::begin(bodyWaveDelayLine), std::end(bodyWaveDelayLine), 0.0f);
+        std::fill(std::begin(holeWaveDelayLine), std::end(holeWaveDelayLine), 0.0f);
+        writeIdx = 0;
+        prevInputPressure = 0.0f;
+        prevSurfaceVelocity = 0.0f;
+        airSheenState = 0.0f;
+        helmholtzLowpass = 0.0f;
+        proximitySubState = 0.0f;
+        smoothPlateDelay = 0.0004f * sampleRate;
+        smoothHoleDelay  = 0.0011f * sampleRate;
+        diffX1 = diffY1 = diffX2 = diffY2 = 0.0f;
+    }
+
+    inline float processSample(float rawMic, float bodyResonance,
+                               float openness = 0.75f,
+                               float micAirSheen = 0.55f,
+                               float closeProximity = 0.70f) noexcept
+    {
+        if (openness <= 0.001f && micAirSheen <= 0.001f && closeProximity <= 0.001f) {
+            return bodyResonance;
+        }
+
+        // 1. Extract Soundhole / Port Helmholtz Piston (< 200 Hz air pump)
+        helmholtzLowpass += 0.025f * (bodyResonance - helmholtzLowpass);
+
+        bodyWaveDelayLine[writeIdx] = bodyResonance;
+        holeWaveDelayLine[writeIdx] = helmholtzLowpass;
+
+        // 2. Smoothly ramped Tri-Point Wavefront Geometry (Zero step jumps!)
+        const float distanceScale = 1.0f - (closeProximity * 0.45f);
+        const float targetPlateDelay = std::clamp((0.00028f + openness * 0.00035f) * distanceScale * sampleRate, 2.0f, static_cast<float>(kMaxAirDelay - 8));
+        const float targetHoleDelay  = std::clamp((0.00085f + openness * 0.00075f) * distanceScale * sampleRate, 4.0f, static_cast<float>(kMaxAirDelay - 8));
+
+        // 25ms per-sample smoothing prevents any thumping when Shell Depth / Openness changes
+        smoothPlateDelay += 0.0008f * (targetPlateDelay - smoothPlateDelay);
+        smoothHoleDelay  += 0.0008f * (targetHoleDelay  - smoothHoleDelay);
+
+        const float delayedPlateWave = readDelayHermite(bodyWaveDelayLine, kMaxAirDelay, writeIdx, smoothPlateDelay);
+        const float delayedHoleWave  = readDelayHermite(holeWaveDelayLine, kMaxAirDelay, writeIdx, smoothHoleDelay);
+
+        writeIdx = (writeIdx + 1) & (kMaxAirDelay - 1);
+
+        // 3. Free-Air Particle Acceleration (Condenser Mic Top-End Sheen)
+        const float surfaceVelocity = rawMic - prevInputPressure;
+        prevInputPressure = rawMic;
+
+        const float airAcceleration = surfaceVelocity - prevSurfaceVelocity;
+        prevSurfaceVelocity = surfaceVelocity;
+
+        airSheenState = (airSheenState * 0.45f) + (airAcceleration * 0.55f);
+        const float condenserAirWave = FluidMath::fast_tanh(airSheenState * 2.0f) * micAirSheen * 0.45f;
+
+        // 4. Close-Mic Capsule Proximity Effect (Pressure-Gradient Low-End Weight)
+        proximitySubState += 0.012f * (delayedPlateWave - proximitySubState);
+        const float proximityWarmth = proximitySubState * closeProximity * 0.60f;
+
+        // 5. Exterior Acoustic Interference (Un-boxes the drum/cajon naturally)
+        const float openAirInterference = (delayedPlateWave * 0.85f)
+                                        - (delayedHoleWave * 0.45f * openness)
+                                        + proximityWarmth;
+
+        float exteriorField = (bodyResonance * (1.0f - openness * 0.60f))
+                            + (openAirInterference * openness)
+                            + condenserAirWave;
+
+        // 6. Dual-Stage All-Pass Boundary Diffraction (3D Shell Wrap)
+        const float g1 = 0.35f * openness;
+        const float g2 = -0.22f * openness;
+
+        const float ap1 = -g1 * exteriorField + diffX1 + g1 * diffY1;
+        diffX1 = exteriorField;
+        diffY1 = ap1;
+
+        const float ap2 = -g2 * ap1 + diffX2 + g2 * diffY2;
+        diffX2 = ap1;
+        diffY2 = ap2;
+
+        return FluidMath::fast_tanh(ap2 * 1.10f);
+    }
+};
+
+// ============================================================================
+// Stage 1C: 2-DOF Coupled Fluid Drum & Cajon Cavity (From FluidAcousticCavity)
+// Passive, unconditionally stable Cytomic SVF resonators for:
+//   - Helmholtz Air Port / Shell Cavity Mode (f_A0)
+//   - Batter Head / Tapa Plate Mode (f_T1)
+//   - Input-Gated Snare Wire & Cajon String Exciter (ZERO constant white noise!)
 // ============================================================================
 class FluidDrumShellDSP {
 private:
-    static constexpr int kMaxShellDelay = 512; // Up to 10.6ms buffer @ 48kHz (supports up to 192kHz)
-    float shellAirColumnBuf[kMaxShellDelay] = {0.0f};
-    int writeIdx = 0;
+    DrumInertialCell inertialCell;
+    DrumAirMicDSP    airMic;
 
-    // Pneumatic Shell & Membrane State Variables
-    float chamberPressure = 1.0f;    // Pneumatic air-vent compression state
-    float headPosition = 0.0f;       // Resonant head displacement
-    float headVelocity = 0.0f;       // Resonant head velocity
-    float prevInput = 0.0f;
-    float stickSnapMomentum = 0.0f;
-    float snareWireEnvelope = 0.0f;
-    float dcBlockerX1 = 0.0f, dcBlockerY1 = 0.0f;
+    // Cytomic SVF states for Boxy Mud De-Resonator
+    float s1_box = 0.0f, s2_box = 0.0f;
 
-    // Fast deterministic noise state for sympathetic snare wire sizzle
+    // 2-DOF Cytomic SVF states: Batter/Tapa (t) and Helmholtz Air Port (a)
+    float s1_t = 0.0f, s2_t = 0.0f;
+    float s1_a = 0.0f, s2_a = 0.0f;
+    float eddy_state = 0.0f;
+
+    // Per-sample smoothed geometry parameters (100% eliminates thumps/farts on knob moves!)
+    float smoothF_A0   = 65.0f;
+    float smoothF_T1   = 135.0f;
+    float smoothBoxHz  = 220.0f;
+    float smoothDepth  = 0.75f;
+    bool  initialized  = false;
+
+    // Transient envelope for natural membrane pitch-bloom & gated snare wires
+    float hitEnvelope  = 0.0f;
+    float wireEnvelope = 0.0f;
+
+    // Cytomic SVF states for metallic snare wire / cajon string shaping (2.8 kHz BP + 1.5 kHz HP)
+    float s1_wire = 0.0f, s2_wire = 0.0f;
     uint32_t rngState = 2463534242u;
 
     float sampleRate = 48000.0f;
-    float timeStep = 1.0f / 48000.0f;
 
     inline float fastWhiteNoise() noexcept {
-        // Constant-time 3-cycle Xorshift PRNG (Zero library calls)
         rngState ^= rngState << 13;
         rngState ^= rngState >> 17;
         rngState ^= rngState << 5;
@@ -212,118 +436,215 @@ private:
 public:
     void prepare(float sr) noexcept {
         sampleRate = sr > 8000.0f ? sr : 48000.0f;
-        timeStep = 1.0f / sampleRate;
+        inertialCell.init(sampleRate);
+        airMic.init(sampleRate);
         reset();
     }
 
     void reset() noexcept {
-        std::fill(std::begin(shellAirColumnBuf), std::end(shellAirColumnBuf), 0.0f);
-        writeIdx = 0;
-        chamberPressure = 1.0f;
-        headPosition = 0.0f;
-        headVelocity = 0.0f;
-        prevInput = 0.0f;
-        stickSnapMomentum = 0.0f;
-        snareWireEnvelope = 0.0f;
-        dcBlockerX1 = dcBlockerY1 = 0.0f;
+        inertialCell.reset();
+        airMic.reset();
+        s1_box = s2_box = 0.0f;
+        s1_t = s2_t = s1_a = s2_a = 0.0f;
+        eddy_state = 0.0f;
+        hitEnvelope = 0.0f;
+        wireEnvelope = 0.0f;
+        s1_wire = s2_wire = 0.0f;
+        initialized = false;
     }
 
-    float getChamberPressure() const noexcept { return chamberPressure; }
-    float getHeadDisplacement() const noexcept { return headPosition; }
-    float getWireActivity() const noexcept { return snareWireEnvelope; }
+    float getChamberPressure() const noexcept { return inertialCell.getChamberPressure(); }
+    float getHeadDisplacement() const noexcept { return FluidMath::fast_tanh((s2_t + s2_a) * 2.0f); }
+    float getWireActivity() const noexcept { return wireEnvelope; }
 
-    inline float processSample(float inputMicOrTrigger,
-                               float drumFundamentalHz = 110.0f,
-                               float shellDepthScalar = 0.55f,
-                               float ventChokeAmount = 0.70f,
-                               float snareWireBuzz = 0.0f,
-                               float closeMicAir = 0.65f,
+    inline float processSample(float liveMicInput,
+                               float boxyCutHz,
+                               float baseA0Hz,
+                               float baseDepthScalar,
+                               float customTuningHz,
+                               float customDepthScalar,
+                               float ventChokeAmount,
+                               float woodViscosity,
+                               float headDamping,
+                               float snareWireBuzz,
+                               float stickSnap,
+                               float deBoxIntensity,
+                               float morphAmount,
                                float sympatheticKitBleed = 0.0f) noexcept
     {
-        // 1. STICK / BEATER TRANSIENT VELOCITY & FLUID VISCOSITY CUSHION
-        const float instantVelocity = inputMicOrTrigger - prevInput;
-        prevInput = inputMicOrTrigger;
-        stickSnapMomentum = (stickSnapMomentum * 0.58f) + (instantVelocity * 0.42f);
+        // 1. Acoustic-Sim Style Size & Depth Geometry Calculation
+        // Altering either Tuning (Size) or Shell Depth shifts both the Helmholtz Air Mode (A0)
+        // and the Batter/Tapa Mode (T1) together, just like FluidAcousticCavity!
+        const float refHz = std::max(25.0f, baseA0Hz);
+        const float userHz = (customTuningHz > 20.0f) ? customTuningHz : refHz;
+        const float tuningRatio = std::clamp(userHz / refHz, 0.45f, 2.20f);
 
-        const float stickCrack = FluidMath::fast_tanh(stickSnapMomentum * 2.8f) * closeMicAir * 0.50f;
+        const float refDepth = std::clamp(baseDepthScalar, 0.20f, 1.20f);
+        const float userDepth = (customDepthScalar > 0.05f) ? customDepthScalar : refDepth;
+        const float depthRatio = std::clamp(userDepth / refDepth, 0.45f, 2.00f);
 
-        // 2. PNEUMATIC AIR-VENT COMPRESSION (Internal Shell Pressure Bottleneck)
-        const float hitEnergy = std::min(std::abs(inputMicOrTrigger) * (1.5f + ventChokeAmount * 2.0f), 2.5f);
-        const float ventRecoverySpeed = 0.0008f + (1.0f - shellDepthScalar) * 0.0025f;
+        // Deeper shell = larger air cavity volume V = pi*r^2*h -> lowers Helmholtz f_A0 by 1/sqrt(depthRatio)
+        const float target_A0 = std::clamp((baseA0Hz * tuningRatio) / std::sqrt(depthRatio), 28.0f, 450.0f);
 
-        chamberPressure -= hitEnergy * 0.0045f * ventChokeAmount;
-        chamberPressure += (1.0f - chamberPressure) * ventRecoverySpeed;
-        chamberPressure = std::clamp(chamberPressure, 0.30f, 1.0f);
+        // Coupled Top Plate / Batter Head Mode T1 sits ~1.85x above A0 and scales with size & depth
+        const float plateRatio = 1.75f + 0.30f * (1.0f - std::clamp(userDepth, 0.2f, 1.0f));
+        const float target_T1 = std::clamp((baseA0Hz * plateRatio * std::pow(tuningRatio, 0.88f)) / std::sqrt(depthRatio * 0.85f), 55.0f, 950.0f);
+        const float target_Box = std::clamp(boxyCutHz, 80.0f, 800.0f);
+        const float target_DepthBlend = std::clamp(userDepth * 0.85f, 0.15f, 1.15f);
 
-        const float compressedBatterWave = FluidMath::fluidTransfer(
-            inputMicOrTrigger * chamberPressure * (1.2f + ventChokeAmount * 0.8f), 
-            0.35f
-        );
-
-        // 3. TOP-TO-BOTTOM HEAD AIR COLUMN PROPAGATION DELAY
-        shellAirColumnBuf[writeIdx] = compressedBatterWave;
-        const int mask = kMaxShellDelay - 1;
-        const int shellDelaySamples = std::clamp(
-            static_cast<int>((0.0003f + shellDepthScalar * 0.0019f) * sampleRate), 
-            1, mask - 1
-        );
-        const int readIdx = (writeIdx - shellDelaySamples + kMaxShellDelay) & mask;
-        const float bottomHeadExcitation = shellAirColumnBuf[readIdx] + (sympatheticKitBleed * 0.25f);
-        writeIdx = (writeIdx + 1) & mask;
-
-        // 4. NON-LINEAR DRUMHEAD MASS-SPRING WITH TENSION PITCH-GLIDE
-        const float pitchGlideBoost = 1.0f + ((1.0f - chamberPressure) * ventChokeAmount * 0.32f);
-        const float omega = 2.0f * 3.14159265f * drumFundamentalHz * pitchGlideBoost;
-        const float stiffness = omega * omega;
-        const float damping = 18.0f + (1.0f - shellDepthScalar) * 35.0f;
-
-        const float restoringForce = -stiffness * headPosition;
-        const float dampingForce   = -damping * headVelocity;
-        const float driveForce     = bottomHeadExcitation * stiffness * 0.45f;
-
-        headVelocity += (driveForce + restoringForce + dampingForce) * timeStep;
-        headPosition += headVelocity * timeStep;
-        headPosition = FluidMath::fast_tanh(headPosition * 1.4f);
-
-        // 5. NON-LINEAR SNARE WIRE RATTLE
-        float wireSizzle = 0.0f;
-        if (snareWireBuzz > 0.001f) {
-            const float headSpeed = std::abs(headVelocity) * 0.0015f + std::abs(bottomHeadExcitation) * 0.8f;
-            const float envRate = (headSpeed > snareWireEnvelope) ? 0.08f : 0.0018f;
-            snareWireEnvelope += (headSpeed - snareWireEnvelope) * envRate;
-            snareWireEnvelope = std::min(snareWireEnvelope, 1.2f);
-
-            const float rawNoise = fastWhiteNoise();
-            wireSizzle = FluidMath::fast_tanh(rawNoise * snareWireEnvelope * 3.0f) * snareWireBuzz * 0.35f;
+        if (!initialized) {
+            smoothF_A0  = target_A0;
+            smoothF_T1  = target_T1;
+            smoothBoxHz = target_Box;
+            smoothDepth = target_DepthBlend;
+            initialized = true;
+        } else {
+            // Smooth per-sample one-pole ramping (~20ms) prevents ANY thump or farting on knob changes!
+            smoothF_A0  += 0.0010f * (target_A0 - smoothF_A0);
+            smoothF_T1  += 0.0010f * (target_T1 - smoothF_T1);
+            smoothBoxHz += 0.0010f * (target_Box - smoothBoxHz);
+            smoothDepth += 0.0010f * (target_DepthBlend - smoothDepth);
         }
 
-        // 6. COMBINE BATTER ATTACK, SHELL BODY, STICK SNAP & SNARE WIRES
-        const float combinedDrum = (compressedBatterWave * 0.70f)
-                                 + (headPosition * (0.55f + closeMicAir * 0.35f))
-                                 + stickCrack
-                                 + wireSizzle;
+        // 2. Stage 1A: Mechanical Soundboard/Membrane Inertia & Pneumatic Vent Cushion
+        const float cushionedInput = inertialCell.process(liveMicInput, ventChokeAmount, woodViscosity, stickSnap);
 
-        // DC Blocker
-        const float dcOut = combinedDrum - dcBlockerX1 + 0.995f * dcBlockerY1;
-        dcBlockerX1 = combinedDrum;
-        dcBlockerY1 = dcOut;
+        // 3. Cardboard Boxiness De-Resonator (Cytomic SVF Band-Reject)
+        const float w_box = std::clamp(3.14159265f * smoothBoxHz / sampleRate, 0.005f, 0.40f);
+        const float g_box = std::tan(w_box);
+        const float k_box = 0.65f; // Musical width for cardboard mud removal
+        const float hp_box = (cushionedInput - (k_box + g_box) * s1_box - s2_box) / (1.0f + g_box * (k_box + g_box));
+        const float bp_box = g_box * hp_box + s1_box;
+        s1_box = g_box * hp_box + bp_box;
+        const float lp_box = g_box * bp_box + s2_box;
+        s2_box = g_box * bp_box + lp_box;
 
-        return FluidMath::fast_tanh(dcOut * 1.20f);
+        // Normalize bandpass gain (k_box * bp_box has unity peak gain)
+        const float deBoxed = cushionedInput - (bp_box * k_box * deBoxIntensity * morphAmount * 0.80f);
+
+        // 4. Track Input Hit Envelope (for subtle membrane pitch-bloom & strict snare wire gating)
+        const float absIn = std::abs(deBoxed) + std::abs(sympatheticKitBleed) * 0.30f;
+        const float envCoeff = (absIn > hitEnvelope) ? 0.08f : 0.0015f;
+        hitEnvelope += envCoeff * (absIn - hitEnvelope);
+        hitEnvelope = FluidMath::flush_denormal(hitEnvelope);
+
+        // Subtle dynamic membrane pitch-glide on hard hits (+0% at rest, up to +6% on heavy strikes)
+        const float pitchBloom = 1.0f + std::min(hitEnvelope * 0.14f * ventChokeAmount, 0.065f);
+
+        // 5. 2-DOF Coupled Fluid Cavity (Exact Cytomic SVF topology from CyberAcousticEngine)
+        // Strictly passive & unconditionally stable -> NEVER self-oscillates or generates a sine wave!
+        const float f_A0_inst = std::clamp(smoothF_A0 * pitchBloom, 25.0f, sampleRate * 0.42f);
+        const float f_T1_inst = std::clamp(smoothF_T1 * pitchBloom, 45.0f, sampleRate * 0.44f);
+
+        // Q is damped (3.5 to 8.5) so drum notes sing with woody punch and decay naturally
+        const float Q_a = 4.5f + (1.0f - headDamping) * 4.5f;
+        const float Q_t = 3.5f + (1.0f - headDamping) * 3.5f;
+
+        const float g_a = std::tan(3.14159265f * f_A0_inst / sampleRate);
+        const float k_a = 1.0f / Q_a;
+
+        const float g_t = std::tan(3.14159265f * f_T1_inst / sampleRate);
+        const float k_t = 1.0f / Q_t;
+
+        // Bounded corner eddy turbulence (Rule 32 compliant)
+        const float bx = FluidMath::fast_tanh(deBoxed);
+        const float tau_vortex = (bx * bx * bx - 0.35f * bx) * woodViscosity;
+        eddy_state = 0.80f * eddy_state + 0.20f * tau_vortex;
+        const float input_with_eddies = deBoxed + 0.22f * eddy_state;
+
+        // Solve T1 Batter / Tapa Mode
+        const float hp_t = (input_with_eddies - (k_t + g_t) * s1_t - s2_t) / (1.0f + g_t * (k_t + g_t));
+        const float bp_t = g_t * hp_t + s1_t;
+        s1_t = FluidMath::flush_denormal(g_t * hp_t + bp_t);
+        const float lp_t = g_t * bp_t + s2_t;
+        s2_t = FluidMath::flush_denormal(g_t * bp_t + lp_t);
+
+        // Cross-couple Batter displacement into Helmholtz Air Cavity Mode (A0)
+        // Scaling by k_t keeps excitation bounded regardless of Q_t
+        const float norm_bp_t = bp_t * k_t;
+        const float air_excitation = input_with_eddies * 0.40f + norm_bp_t * 0.75f;
+        const float hp_a = (air_excitation - (k_a + g_a) * s1_a - s2_a) / (1.0f + g_a * (k_a + g_a));
+        const float bp_a = g_a * hp_a + s1_a;
+        s1_a = FluidMath::flush_denormal(g_a * hp_a + bp_a);
+        const float lp_a = g_a * bp_a + s2_a;
+        s2_a = FluidMath::flush_denormal(g_a * bp_a + lp_a);
+
+        const float norm_bp_a = bp_a * k_a;
+
+        // Acoustically coupled output (Helmholtz Air + Batter Plate - Boxy Dip Anti-Resonance)
+        const float airPumpWeight = 0.85f + 0.55f * smoothDepth;
+        const float coupled_cavity = norm_bp_t * 0.85f
+                                   + norm_bp_a * airPumpWeight
+                                   - (lp_t - lp_a) * 0.22f;
+
+        const float bodyResonance = deBoxed * (1.0f - smoothDepth * 0.45f)
+                                  + coupled_cavity * smoothDepth * 1.45f;
+
+        // 6. Stage 1B: Fluid Air & Close-Mic Radiation Engine
+        const float openness  = std::clamp(0.45f + smoothDepth * 0.40f, 0.20f, 0.95f);
+        const float airSheen  = std::clamp((1.0f - headDamping) * 0.65f + (stickSnap - 0.5f) * 0.35f, 0.10f, 0.90f);
+        const float proximity = std::clamp(0.40f + smoothDepth * 0.45f, 0.20f, 0.95f);
+
+        const float radiatedDrum = airMic.processSample(deBoxed, bodyResonance, openness, airSheen, proximity);
+
+        // 7. INPUT-GATED SNARE WIRE & CAJON STRING EXCITER
+        // Strictly gated to actual drum hits -> 100% SILENT (0.0f) when no hit is occurring!
+        float wireSizzle = 0.0f;
+        if (snareWireBuzz > 0.001f) {
+            // Fast attack (1.5ms), natural wire-settle release (~65ms)
+            const float wireDrive = std::abs(norm_bp_t) * 0.9f + std::abs(deBoxed) * 0.7f + std::abs(sympatheticKitBleed) * 0.35f;
+            const float wAtt = (wireDrive > wireEnvelope) ? 0.06f : 0.0009f;
+            wireEnvelope += wAtt * (wireDrive - wireEnvelope);
+            wireEnvelope = FluidMath::flush_denormal(wireEnvelope);
+
+            // Hard noise-floor gate below -50 dBFS (0.003f): guarantees zero background hiss!
+            const float gateThresh = 0.003f;
+            if (wireEnvelope > gateThresh) {
+                float gateOpen = std::clamp((wireEnvelope - gateThresh) * 35.0f, 0.0f, 1.0f);
+                gateOpen *= gateOpen; // Smooth quadratic knee
+
+                // Shape white noise through Cytomic SVF Bandpass/Highpass (3.4 kHz metallic wire band)
+                const float rawNoise = fastWhiteNoise();
+                const float g_w = std::tan(3.14159265f * 3400.0f / sampleRate);
+                const float k_w = 0.85f;
+                const float hp_w = (rawNoise - (k_w + g_w) * s1_wire - s2_wire) / (1.0f + g_w * (k_w + g_w));
+                const float bp_w = g_w * hp_w + s1_wire;
+                s1_wire = g_w * hp_w + bp_w;
+                const float lp_w = g_w * bp_w + s2_wire;
+                s2_wire = g_w * bp_w + lp_w;
+
+                const float metallicNoise = (bp_w * 0.70f + hp_w * 0.30f);
+                // Modulate wire rattle with the actual vibrating membrane wave so it breathes with the head
+                const float headMod = 0.35f + 0.65f * std::min(1.0f, std::abs(coupled_cavity) * 3.5f);
+                const float envGain = std::min(wireEnvelope * 2.5f, 1.0f) * gateOpen * headMod;
+
+                wireSizzle = FluidMath::fast_tanh(metallicNoise * envGain * 2.2f) * snareWireBuzz * 0.32f;
+            } else {
+                s1_wire = FluidMath::flush_denormal(s1_wire * 0.95f);
+                s2_wire = FluidMath::flush_denormal(s2_wire * 0.95f);
+            }
+        } else {
+            wireEnvelope = 0.0f;
+        }
+
+        const float fullShellSignal = FluidMath::fast_tanh((radiatedDrum + wireSizzle) * 1.05f);
+        return (liveMicInput * (1.0f - morphAmount)) + (fullShellSignal * morphAmount);
     }
 };
 
 // ============================================================================
-// Stage 1B: Fluid Bronze Cymbal & Plate Dispersion DSP
+// Stage 1D: Fluid Bronze Cymbal & Plate Dispersion DSP
 // Models flexural wave dispersion in B20/B8 bronze alloy plates,
-// bell vs bow modal resonance, and air viscosity shimmer (zero harsh trash)
+// passive Cytomic SVF bell vs bow modal resonance, and air viscosity shimmer
 // ============================================================================
 class FluidCymbalDSP {
 private:
     float apX[4] = {0.0f}, apY[4] = {0.0f};
 
-    float bellBp = 0.0f, bellLp = 0.0f;
-    float bowBp = 0.0f,  bowLp = 0.0f;
+    float s1_bell = 0.0f, s2_bell = 0.0f;
+    float s1_bow  = 0.0f, s2_bow  = 0.0f;
 
+    float smoothBellF = 2200.0f;
     float washState = 0.0f;
     float harshDetectEnv = 0.0f;
     float sampleRate = 48000.0f;
@@ -336,8 +657,8 @@ public:
 
     void reset() noexcept {
         for (int i = 0; i < 4; ++i) apX[i] = apY[i] = 0.0f;
-        bellBp = bellLp = 0.0f;
-        bowBp = bowLp = 0.0f;
+        s1_bell = s2_bell = 0.0f;
+        s1_bow  = s2_bow  = 0.0f;
         washState = 0.0f;
         harshDetectEnv = 0.0f;
     }
@@ -345,6 +666,8 @@ public:
     inline float processSample(float in, float bellFreq = 2200.0f, float bowFreq = 650.0f,
                                float shimmer = 0.70f, float bronzeViscosity = 0.45f) noexcept
     {
+        smoothBellF += 0.001f * (std::clamp(bellFreq, 600.0f, 5000.0f) - smoothBellF);
+
         // 1. Flexural Wave Dispersion: high frequencies travel faster in thin metal plates
         float s = in;
         const float g = 0.62f;
@@ -355,21 +678,25 @@ public:
             s = d;
         }
 
-        // 2. Dual Modal Bell & Bow Resonators
-        const float wBell = std::clamp(2.0f * 3.14159265f * bellFreq / sampleRate, 0.01f, 0.45f);
-        const float qBell = 0.12f;
-        float hpBell = in - bellLp - qBell * bellBp;
-        bellBp += wBell * hpBell;
-        bellLp += wBell * bellBp;
+        // 2. Unconditionally Stable Cytomic SVF Bell & Bow Resonators
+        const float g_bell = std::tan(std::clamp(3.14159265f * smoothBellF / sampleRate, 0.01f, 0.42f));
+        const float k_bell = 0.20f;
+        const float hp_bell = (in - (k_bell + g_bell) * s1_bell - s2_bell) / (1.0f + g_bell * (k_bell + g_bell));
+        const float bp_bell = g_bell * hp_bell + s1_bell;
+        s1_bell = FluidMath::flush_denormal(g_bell * hp_bell + bp_bell);
+        const float lp_bell = g_bell * bp_bell + s2_bell;
+        s2_bell = FluidMath::flush_denormal(g_bell * bp_bell + lp_bell);
 
-        const float wBow = std::clamp(2.0f * 3.14159265f * bowFreq / sampleRate, 0.01f, 0.45f);
-        const float qBow = 0.35f;
-        float hpBow = in - bowLp - qBow * bowBp;
-        bowBp += wBow * hpBow;
-        bowLp += wBow * bowBp;
+        const float g_bow = std::tan(std::clamp(3.14159265f * bowFreq / sampleRate, 0.01f, 0.40f));
+        const float k_bow = 0.35f;
+        const float hp_bow = (in - (k_bow + g_bow) * s1_bow - s2_bow) / (1.0f + g_bow * (k_bow + g_bow));
+        const float bp_bow = g_bow * hp_bow + s1_bow;
+        s1_bow = FluidMath::flush_denormal(g_bow * hp_bow + bp_bow);
+        const float lp_bow = g_bow * bp_bow + s2_bow;
+        s2_bow = FluidMath::flush_denormal(g_bow * bp_bow + lp_bow);
 
         // 3. Dynamic Harsh Sizzle Sieve (Tames 5-8 kHz trashiness, opens 12-18 kHz air)
-        const float highEnergy = std::abs(in - bowLp);
+        const float highEnergy = std::abs(in - lp_bow);
         harshDetectEnv += (highEnergy - harshDetectEnv) * 0.005f;
         const float harshDamp = std::clamp(1.0f - harshDetectEnv * 0.85f * bronzeViscosity, 0.25f, 1.0f);
 
@@ -379,22 +706,22 @@ public:
 
         const float combined = (in * 0.35f)
                              + (s * harshDamp * 0.45f)
-                             + (bellBp * 0.30f * shimmer)
-                             + (bowBp * 0.40f)
+                             + (bp_bell * k_bell * 0.35f * shimmer)
+                             + (bp_bow * k_bow * 0.40f)
                              + (washState * 0.35f * shimmer);
 
-        return FluidMath::fast_tanh(combined * 1.15f);
+        return FluidMath::fast_tanh(combined * 1.10f);
     }
 };
 
 // ============================================================================
 // Stage 2: Live Acoustic Drum Kit Morpher (Zero-Sample Physical Re-Shelling)
-// De-resonates boxy room/shell mud & injects physical drum shell models in real time
+// De-resonates boxy room/shell mud & injects coupled 2-DOF acoustic drum cavities
 // ============================================================================
 struct DrumShellProfile {
     const char* name;
     float originalBoxyCutHz;   // Frequency of the real drum's cardboard mud to strip
-    float targetFundamentalHz; // New virtual drum tuning (Hz)
+    float targetFundamentalHz; // Helmholtz air / shell fundamental tuning (Hz)
     float shellDepthScalar;    // 0.2 (Piccolo) -> 0.95 (26" Bonham Kick) or Cymbal Diameter
     float ventChokeAmount;     // Pneumatic air-spring compression or Cymbal Shimmer
     float woodViscosity;       // 0.35 (Crisp Birch/Brass) -> 0.82 (Warm Vintage Maple) or Bronze Viscosity
@@ -488,11 +815,6 @@ class FluidDrumKitMorpherDSP {
 private:
     FluidDrumShellDSP virtualShell;
     FluidCymbalDSP    virtualCymbal;
-
-    // State variables for the Boxy Shell De-Resonator (2nd-order state-variable notch/scoop)
-    float bpState = 0.0f;
-    float lpState = 0.0f;
-    float woodViscosityState = 0.0f;
     float sampleRate = 48000.0f;
 
 public:
@@ -500,13 +822,11 @@ public:
         sampleRate = sr > 8000.0f ? sr : 48000.0f;
         virtualShell.prepare(sampleRate);
         virtualCymbal.prepare(sampleRate);
-        bpState = lpState = woodViscosityState = 0.0f;
     }
 
     void reset() noexcept {
         virtualShell.reset();
         virtualCymbal.reset();
-        bpState = lpState = woodViscosityState = 0.0f;
     }
 
     float getChamberPressure() const noexcept { return virtualShell.getChamberPressure(); }
@@ -521,10 +841,10 @@ public:
                                float customDepth = 0.0f,
                                float customVentChoke = 0.0f,
                                float customWireBuzz = -1.0f,
+                               float stickSnap = 0.65f,
                                float sympatheticBleed = 0.0f) noexcept 
     {
         if (profile.isCymbal) {
-            // Cymbal branch: Bronze plate flexural dispersion & shimmer
             const float bellF = customTuningHz > 500.0f ? customTuningHz : profile.targetFundamentalHz;
             const float bowF = 550.0f;
             const float shimmer = customVentChoke >= 0.0f ? customVentChoke : profile.ventChokeAmount;
@@ -534,38 +854,25 @@ public:
             return (liveMicInput * (1.0f - morphAmount)) + (cymbalOut * morphAmount);
         }
 
-        // Drum Shell branch: Boxy mud cancellation + pneumatic air-spring chamber
-        const float boxyCut = std::clamp(profile.originalBoxyCutHz, 50.0f, 1000.0f);
-        const float f = std::clamp(2.0f * 3.14159265f * boxyCut / sampleRate, 0.005f, 0.45f);
-        const float qDamp = 0.75f;
-        
-        const float hp = liveMicInput - lpState - qDamp * bpState;
-        bpState += f * hp;
-        lpState += f * bpState;
-
-        const float deBoxedExcitation = liveMicInput - (bpState * deBoxIntensity * morphAmount);
-
-        woodViscosityState = (woodViscosityState * profile.woodViscosity) 
-                           + (deBoxedExcitation * (1.0f - profile.woodViscosity));
-        const float shapedExcitation = (deBoxedExcitation * (1.0f - profile.headDamping * 0.45f)) 
-                                     + (woodViscosityState * profile.headDamping * 0.45f);
-
-        const float tuningHz = customTuningHz > 20.0f ? customTuningHz : profile.targetFundamentalHz;
-        const float depthScalar = customDepth > 0.05f ? customDepth : profile.shellDepthScalar;
         const float ventChoke = customVentChoke >= 0.0f ? customVentChoke : profile.ventChokeAmount;
-        const float wireBuzz = customWireBuzz >= 0.0f ? customWireBuzz : profile.snareWireBuzz;
+        const float wireBuzz  = customWireBuzz >= 0.0f  ? customWireBuzz  : profile.snareWireBuzz;
 
-        const float newShellOutput = virtualShell.processSample(
-            shapedExcitation,
-            tuningHz,
-            depthScalar,
+        return virtualShell.processSample(
+            liveMicInput,
+            profile.originalBoxyCutHz,
+            profile.targetFundamentalHz,
+            profile.shellDepthScalar,
+            customTuningHz,
+            customDepth,
             ventChoke,
+            profile.woodViscosity,
+            profile.headDamping,
             wireBuzz,
-            1.0f - (profile.headDamping * 0.5f),
+            stickSnap,
+            deBoxIntensity,
+            morphAmount,
             sympatheticBleed
         );
-
-        return (liveMicInput * (1.0f - morphAmount)) + (newShellOutput * morphAmount);
     }
 };
 
@@ -584,6 +891,10 @@ public:
             s1[i] = s2[i] = 0.0f;
             lastF[i] = lastG[i] = -999.0f;
         }
+        smoothF[0] = 80.0f;    smoothG[0] = 0.0f;
+        smoothF[1] = 320.0f;   smoothG[1] = 0.0f;
+        smoothF[2] = 3500.0f;  smoothG[2] = 0.0f;
+        smoothF[3] = 10500.0f; smoothG[3] = 0.0f;
     }
 
     inline float process(float in, float lowGainDb,
@@ -606,18 +917,22 @@ private:
     float s2[4] = {0.0f};
     float b0[4] = {1.0f}, b1[4] = {0.0f}, b2[4] = {0.0f};
     float a1[4] = {0.0f}, a2[4] = {0.0f};
+    float smoothF[4] = {80.0f, 320.0f, 3500.0f, 10500.0f};
+    float smoothG[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float lastF[4] = {-999.0f}, lastG[4] = {-999.0f};
 
     inline float processFilter(int idx, float in, float freq, float gainDb, float Q, FilterType type) {
-        if (std::abs(freq - lastF[idx]) > 0.5f || std::abs(gainDb - lastG[idx]) > 0.05f) {
-            lastF[idx] = freq;
-            lastG[idx] = gainDb;
-            computeCoefficients(idx, freq, gainDb, Q, type);
+        smoothF[idx] += 0.002f * (freq - smoothF[idx]);
+        smoothG[idx] += 0.002f * (gainDb - smoothG[idx]);
+        if (std::abs(smoothF[idx] - lastF[idx]) > 0.15f || std::abs(smoothG[idx] - lastG[idx]) > 0.02f) {
+            lastF[idx] = smoothF[idx];
+            lastG[idx] = smoothG[idx];
+            computeCoefficients(idx, smoothF[idx], smoothG[idx], Q, type);
         }
 
         float out = b0[idx] * in + s1[idx];
-        s1[idx] = b1[idx] * in - a1[idx] * out + s2[idx];
-        s2[idx] = b2[idx] * in - a2[idx] * out;
+        s1[idx] = FluidMath::flush_denormal(b1[idx] * in - a1[idx] * out + s2[idx]);
+        s2[idx] = FluidMath::flush_denormal(b2[idx] * in - a2[idx] * out);
         return out;
     }
 
@@ -663,7 +978,7 @@ private:
             float two_sqrt_A_alpha = 2.0f * std::sqrt(A) * alpha;
             float b0_raw = A * ((A + 1.0f) + (A - 1.0f) * cosw0 + two_sqrt_A_alpha);
             float b1_raw = -2.0f * A * ((A - 1.0f) + (A + 1.0f) * cosw0);
-            float b2_raw = A * ((A + 1.0f) - (A - 1.0f) * cosw0 - two_sqrt_A_alpha);
+            float b2_raw = A * ((A + 1.0f) + (A - 1.0f) * cosw0 - two_sqrt_A_alpha);
             float a0_raw = (A + 1.0f) - (A - 1.0f) * cosw0 + two_sqrt_A_alpha;
             float a1_raw = 2.0f * ((A - 1.0f) - (A + 1.0f) * cosw0);
             float a2_raw = (A + 1.0f) - (A - 1.0f) * cosw0 - two_sqrt_A_alpha;
@@ -680,6 +995,7 @@ private:
 
 // ============================================================================
 // Stage 4: World-Class Modulated Dual-Tank Drum Reverb Space
+// With per-sample smoothed Size & Decay to prevent thumping on knob changes
 // ============================================================================
 class DrumFluidReverb {
 private:
@@ -706,12 +1022,17 @@ private:
     float dampStateA = 0.0f, dampStateB = 0.0f;
     float sendHpStateL = 0.0f, sendHpStateR = 0.0f;
 
+    float smoothRevSize = 1.0f;
+    float smoothRevDecay = 0.35f;
+
     float lfoPhase1 = 0.17f;
     float lfoPhase2 = 0.63f;
 
     float sampleRate = 48000.0f;
 
     inline float readHermite(const float* buf, int len, float pos) const noexcept {
+        while (pos < 0.0f) pos += static_cast<float>(len);
+        while (pos >= static_cast<float>(len)) pos -= static_cast<float>(len);
         int i1 = static_cast<int>(pos);
         float frac = pos - static_cast<float>(i1);
         int i0 = (i1 - 1 + len) % len;
@@ -748,6 +1069,8 @@ public:
         tankA1Idx = tankA2Idx = tankB1Idx = tankB2Idx = 0;
         dampStateA = dampStateB = 0.0f;
         sendHpStateL = sendHpStateR = 0.0f;
+        smoothRevSize = 1.0f;
+        smoothRevDecay = 0.35f;
     }
 
     inline void processStereo(float inL, float inR,
@@ -759,6 +1082,10 @@ public:
             outR = inR;
             return;
         }
+
+        // Smooth reverb size & decay per sample to prevent any thumping on knob changes
+        smoothRevSize  += 0.0005f * (std::clamp(size, 0.4f, 1.8f) - smoothRevSize);
+        smoothRevDecay += 0.0010f * (std::clamp(decayNorm, 0.05f, 0.98f) - smoothRevDecay);
 
         const float hpCut = (algorithm == 2) ? 180.0f : 80.0f;
         const float hpAlpha = 1.0f - std::exp(-2.0f * 3.14159265f * hpCut / sampleRate);
@@ -779,7 +1106,7 @@ public:
         auto processAP = [](float in, float* buf, int len, int& idx, float g) noexcept {
             float bufOut = buf[idx];
             float out = -g * in + bufOut;
-            buf[idx] = in + g * out;
+            buf[idx] = FluidMath::flush_denormal(in + g * out);
             idx = (idx + 1) % len;
             return out;
         };
@@ -797,11 +1124,11 @@ public:
         if (lfoPhase2 > 1.0f) lfoPhase2 -= 1.0f;
 
         const float lfoDepth = (algorithm == 2) ? 12.0f : 5.0f;
-        const float modOffset1 = FluidMath::fast_sin(lfoPhase1 * 6.2831853f) * lfoDepth;
-        const float modOffset2 = FluidMath::fast_sin(lfoPhase2 * 6.2831853f) * lfoDepth;
+        const float modOffset1 = FluidMath::fast_sin((lfoPhase1 - 0.5f) * 6.2831853f) * lfoDepth;
+        const float modOffset2 = FluidMath::fast_sin((lfoPhase2 - 0.5f) * 6.2831853f) * lfoDepth;
 
-        const float maxDecay = (algorithm == 1) ? 0.94f : (algorithm == 2 ? 0.92f : 0.78f);
-        const float loopFeedback = std::clamp(decayNorm * maxDecay, 0.10f, 0.95f);
+        const float maxDecay = (algorithm == 1) ? 0.92f : (algorithm == 2 ? 0.90f : 0.78f);
+        const float loopFeedback = std::clamp(smoothRevDecay * maxDecay, 0.10f, 0.93f);
 
         const float dampCut = std::clamp(highCutHz, 1200.0f, 16000.0f);
         const float dampCoeff = 1.0f - std::exp(-2.0f * 3.14159265f * dampCut / sampleRate);
@@ -809,13 +1136,12 @@ public:
         float tankAIn = diffSig + tankB2Buf[tankB2Idx] * loopFeedback;
         tankAIn = FluidMath::fast_tanh(tankAIn * 0.95f);
 
-        float readPosA1 = static_cast<float>(tankA1Idx) - (kTankA1Len * 0.5f * size + modOffset1);
-        while (readPosA1 < 0.0f) readPosA1 += kTankA1Len;
+        float readPosA1 = static_cast<float>(tankA1Idx) - (kTankA1Len * 0.5f * smoothRevSize + modOffset1);
         float tankA1Out = readHermite(tankA1Buf, kTankA1Len, readPosA1);
         tankA1Buf[tankA1Idx] = tankAIn;
         tankA1Idx = (tankA1Idx + 1) % kTankA1Len;
 
-        dampStateA += (tankA1Out - dampStateA) * dampCoeff;
+        dampStateA = FluidMath::flush_denormal(dampStateA + (tankA1Out - dampStateA) * dampCoeff);
         float tankA2In = dampStateA;
 
         float tankA2Out = tankA2Buf[tankA2Idx];
@@ -825,13 +1151,12 @@ public:
         float tankBIn = diffSig + tankA2Out * loopFeedback;
         tankBIn = FluidMath::fast_tanh(tankBIn * 0.95f);
 
-        float readPosB1 = static_cast<float>(tankB1Idx) - (kTankB1Len * 0.5f * size + modOffset2);
-        while (readPosB1 < 0.0f) readPosB1 += kTankB1Len;
+        float readPosB1 = static_cast<float>(tankB1Idx) - (kTankB1Len * 0.5f * smoothRevSize + modOffset2);
         float tankB1Out = readHermite(tankB1Buf, kTankB1Len, readPosB1);
         tankB1Buf[tankB1Idx] = tankBIn;
         tankB1Idx = (tankB1Idx + 1) % kTankB1Len;
 
-        dampStateB += (tankB1Out - dampStateB) * dampCoeff;
+        dampStateB = FluidMath::flush_denormal(dampStateB + (tankB1Out - dampStateB) * dampCoeff);
         float tankB2In = dampStateB;
 
         tankB2Buf[tankB2Idx] = tankB2In;
@@ -883,7 +1208,8 @@ public:
                                  int profileIndex, float morphAmount, float deBoxIntensity,
                                  float customTuningHz, float customDepth, float customVentChoke, float customWireBuzz,
                                  float eqLow, float eqLowMidF, float eqLowMidG, float eqHighMidF, float eqHighMidG, float eqHigh,
-                                 float sympatheticBleed = 0.0f)
+                                 float sympatheticBleed = 0.0f,
+                                 float stickSnap = 0.65f)
     {
         float cleaned = denoiseListen ? denoiser.process(inSample, denoiseAmt, denoiseThresh, denoiseShield, true)
                                       : denoiser.process(inSample, denoiseAmt, denoiseThresh, denoiseShield, false);
@@ -891,7 +1217,8 @@ public:
 
         const auto& profile = DrumKitProfiles::kAllProfiles[std::clamp(profileIndex, 0, DrumKitProfiles::kTotalProfiles - 1)];
         float reShelled = morpher.processSample(cleaned, profile, morphAmount, deBoxIntensity,
-                                                customTuningHz, customDepth, customVentChoke, customWireBuzz, sympatheticBleed);
+                                                customTuningHz, customDepth, customVentChoke, customWireBuzz,
+                                                stickSnap, sympatheticBleed);
 
         float equalized = eq.process(reShelled, eqLow, eqLowMidF, eqLowMidG, eqHighMidF, eqHighMidG, eqHigh);
 

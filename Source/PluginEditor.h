@@ -108,6 +108,8 @@ public:
 private:
     void timerCallback() override;
     void loadPreset(int presetId);
+    bool isLoadingPreset = false;
+    int lastSyncedProfile = 0;
 
     CyberDrumProcessor& audioProcessor;
     CyberDrum::CustomDrumLookAndFeel customLookAndFeel;
