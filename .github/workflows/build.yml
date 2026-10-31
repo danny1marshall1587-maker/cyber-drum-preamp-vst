@@ -1,0 +1,128 @@
+name: Multi-Platform Drum Plugin Build & Release
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  PROJECT_NAME: CyberDrumPreamp
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux Dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxinerama-dev \
+            libxext-dev libxrender-dev libxrandr-dev libglu1-mesa-dev \
+            mesa-common-dev libfreetype6-dev libfontconfig1-dev \
+            libcurl4-openssl-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libx11-xcb-dev libxcb-util-dev libxcb-cursor-dev \
+            libxcb-keysyms1-dev libxcb-xinerama0-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-randr0-dev
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release ${{ runner.os == 'macOS' && '-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0"' || '' }}
+
+      - name: Build Plugins
+        run: cmake --build build --config Release -j 4
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PROJECT_NAME }}-${{ runner.os }}
+          path: build/${{ env.PROJECT_NAME }}_artefacts/Release/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download MacOS Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PROJECT_NAME }}-macOS
+          path: Mac
+
+      - name: Download Windows Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PROJECT_NAME }}-Windows
+          path: Win
+
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PROJECT_NAME }}-Linux
+          path: Linux
+
+      - name: Package Release Archives
+        run: |
+          zip -r Cyber-Drum-Preamp-MacOS.zip Mac/
+          zip -r Cyber-Drum-Preamp-Windows.zip Win/
+          zip -r Cyber-Drum-Preamp-Linux.zip Linux/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Cyber-Drum-Preamp-MacOS.zip
+            Cyber-Drum-Preamp-Windows.zip
+            Cyber-Drum-Preamp-Linux.zip
+          name: "Cyber Drum Preamp ${{ github.ref_name }}"
+          tag_name: ${{ github.ref_name }}
+          body: |
+            # Cyber Drum Preamp ${{ github.ref_name }} — Fluid Space Drum & Percussion Release
+            
+            **Fluid Space Drum Shell & Percussion Engine: Pneumatic Shells, Non-Linear Membrane Heads & Live Acoustic Re-Shelling**
+            *Free and Open Source Standalone Application (with ASIO) and VST3 / AU / LV2 Plugin*
+            
+            ### Physical Modeling Architecture:
+            - **Pneumatic Air-Vent Compression (`chamberPressure`)**:
+              - Models the adiabatic air spring inside sealed cylindrical wooden shells with pneumatic relief vents.
+              - Absorbs microsecond digital clipping spikes into thick, chest-hitting analog punch without squashing transient crack.
+            - **Non-Linear Membrane Tension Pitch-Glide**:
+              - Striking hard dynamically stretches the membrane, bending the fundamental pitch $+15\text{ to }+42\text{ cents}$ up on impact before settling back down.
+            - **Batter-to-Resonant Head Fluid Propagation Delay & Snare Wires**:
+              - $0.3\text{ to }2.2\,\text{ms}$ physical air column delay from top head to bottom head with dynamic metallic snare wire sizzle.
+            - **Zero-Sample Physical Re-Shelling (`FluidDrumKitMorpherDSP`)**:
+              - Subtracts cardboard room/shell mud ($160\text{--}350\,\text{Hz}$) with zero trigger latency ($0.0\,\text{ms}$ delay), then injects the clean stick excitation into 15 pre-baked physical drum geometries (Maple, Birch, Bell Brass, Flamenco & Gig Cajons, Congas, Djembe).
+            - **10-Band Drum Cyber-Denoiser PRO**:
+              - Zero-latency spectral subtraction removing stage hiss, pedal squeaks, and HVAC hum with a non-zero floor ($0.08$) and Harmonic Shield.
+            - **World-Class Modulated Dual-Tank Drum Reverb**:
+              - Dattorro / Lexicon figure-of-eight architecture with Studio Drum Booth, Arena Live Hall, and Vintage Snare Plate.
+            - **Studio 4-Band Sculpting EQ**:
+              - 80 Hz Sub Thump, 180-900 Hz Boxiness Cut, 1.5-6.5 kHz Attack Crack, 10.5 kHz Air Sizzle.
+            - **Level-Matched Bypass ("A/B MATCHED")**:
+              - Loudness-compensated comparison ($0.25\times \dots 4.0\times$ RMS tracking).
+            - **High-Performance ASIO Support (Windows)**:
+              - Native Steinberg ASIO driver backend (`JUCE_ASIO=1`) and WASAPI Exclusive support (`JUCE_WASAPI_EXCLUSIVE=1`) for sub-3ms ultra-low round-trip latency.
+            
+            ### Included Packages:
+            - **Windows x64**: Standalone (.exe with ASIO) + VST3 + LV2
+            - **macOS Universal Binary (Apple Silicon M1-M5 + Intel x86_64)**: Standalone (.app) + AU (.component) + VST3 + LV2
+            - **Linux x64**: Standalone + VST3 + LV2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
